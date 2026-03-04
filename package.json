@@ -8,7 +8,8 @@
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "auth:google": "node scripts/google-auth-setup.js"
+    "auth:google": "node scripts/google-auth-setup.js",
+    "whatsapp": "node src/whatsapp/collector.js"
   },
   "keywords": [],
   "author": "",
