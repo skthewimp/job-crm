@@ -2,6 +2,36 @@
 
 ---
 
+## 2026-03-04 — WhatsApp backfill and group chat filtering
+
+### User prompts this session
+
+> "i think i've done that. can you check? and also do a test run with whatsapp. based on last 3 weeks of messages, tell me about any pending followups etc. in the email. this is just a one time exercise"
+>
+> "ok i need you to ignore group chats on whatsapp."
+>
+> "update repo etc."
+
+### What changed
+
+**WhatsApp 3-week backfill** — The live collector only captures messages from when it starts. Built a one-time `scripts/backfill-whatsapp.js` that stops the daemon, connects with the same auth session, calls `chat.fetchMessages({ limit: 500 })` on all 975 chats, stores everything from the last 21 days, then restarts the daemon. Pulled 2,291 messages.
+
+**Group chat filtering** — Group chats added massive noise (2,069 of 2,803 WhatsApp messages were from groups). Added `if (chat.isGroup) return` to the collector's `message_create` handler, and `if (chat.isGroup) continue` to the backfill script's chat loop. Purged existing group messages from SQLite (`DELETE WHERE chat_id LIKE '%@g.us'`). 734 individual messages remained.
+
+**Backfill processing results** — Ran the full classify→extract→CRM pipeline on 3 weeks of WhatsApp messages. 3,113 messages classified in 156 batches (Haiku), 221 flagged as job-related, all extracted by Sonnet. Added 87 new contacts and updated 85 existing ones. 42 self-references filtered out. Hit Sheets API read quota on a few upserts (SQLite had everything; daily scan will catch the Sheet gaps).
+
+**Follow-up report email** — Sent a one-time backfill report: 190 total contacts (13 email + 177 WhatsApp), 2 overdue, 4 due today, 13 upcoming follow-ups.
+
+### Scripts added
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/backfill-whatsapp.js` | One-time: fetch 3 weeks of WhatsApp history into SQLite |
+| `scripts/whatsapp-followup-report.js` | One-time: classify + extract + CRM update + email report |
+| `scripts/send-wa-report.js` | One-time: send follow-up report from existing DB data |
+
+---
+
 ## 2026-03-04 — Setup, debugging, and first successful run
 
 ### User prompts this session (continued)
