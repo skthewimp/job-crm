@@ -24,6 +24,7 @@ client.on('ready', () => {
 client.on('message_create', async (msg) => {
   try {
     const chat = await msg.getChat();
+    if (chat.isGroup) return;
     const contact = await msg.getContact();
     const isFromMe = msg.fromMe;
 
