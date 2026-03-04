@@ -6,7 +6,7 @@
     <string>com.jobcrm.whatsapp</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/node</string>
+        <string>/opt/homebrew/bin/node</string>
         <string>/Users/Karthik/Documents/work/data work/job-crm/src/whatsapp/collector.js</string>
     </array>
     <key>WorkingDirectory</key>
@@ -14,7 +14,7 @@
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin</string>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>
