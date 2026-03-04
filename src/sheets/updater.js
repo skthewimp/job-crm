@@ -2,6 +2,8 @@
 const { google } = require('googleapis');
 const { getOAuth2Client } = require('../google-auth');
 
+const SHEET_TAB = process.env.SHEET_TAB || 'CRM';
+
 const SHEET_COLUMNS = [
   'Contact Name', 'Company', 'Role/Title', 'Relationship Type',
   'Source', 'Channel', 'First Contact Date', 'Last Interaction Date',
@@ -13,15 +15,34 @@ async function initSheet(sheetId) {
   const auth = getOAuth2Client();
   const sheets = google.sheets({ version: 'v4', auth });
 
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: sheetId,
-    range: 'Sheet1!A1:N1'
-  });
+  // Check if tab exists, create it if not
+  const meta = await sheets.spreadsheets.get({ spreadsheetId: sheetId });
+  const tabExists = meta.data.sheets.some(s => s.properties.title === SHEET_TAB);
+
+  if (!tabExists) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: sheetId,
+      requestBody: {
+        requests: [{ addSheet: { properties: { title: SHEET_TAB } } }]
+      }
+    });
+  }
+
+  // Check if header row exists
+  let res;
+  try {
+    res = await sheets.spreadsheets.values.get({
+      spreadsheetId: sheetId,
+      range: `${SHEET_TAB}!A1:N1`
+    });
+  } catch {
+    res = { data: {} };
+  }
 
   if (!res.data.values || res.data.values.length === 0) {
     await sheets.spreadsheets.values.update({
       spreadsheetId: sheetId,
-      range: 'Sheet1!A1:N1',
+      range: `${SHEET_TAB}!A1:N1`,
       valueInputOption: 'RAW',
       requestBody: { values: [SHEET_COLUMNS] }
     });
@@ -34,7 +55,7 @@ async function getAllRows(sheetId) {
 
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: 'Sheet1!A:N'
+    range: `${SHEET_TAB}!A:N`
   });
 
   const rows = res.data.values || [];
@@ -106,7 +127,7 @@ async function upsertRow(sheetId, contact) {
 
     await sheets.spreadsheets.values.update({
       spreadsheetId: sheetId,
-      range: `Sheet1!A${match.rowIndex}:N${match.rowIndex}`,
+      range: `${SHEET_TAB}!A${match.rowIndex}:N${match.rowIndex}`,
       valueInputOption: 'RAW',
       requestBody: { values: [updatedRow] }
     });
@@ -115,7 +136,7 @@ async function upsertRow(sheetId, contact) {
     rowData[6] = rowData[6] || new Date().toISOString().split('T')[0];
     await sheets.spreadsheets.values.append({
       spreadsheetId: sheetId,
-      range: 'Sheet1!A:N',
+      range: `${SHEET_TAB}!A:N`,
       valueInputOption: 'RAW',
       requestBody: { values: [rowData] }
     });
