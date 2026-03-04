@@ -64,9 +64,18 @@ async function dailyScan() {
   );
 
   console.log('Updating CRM...');
-  let added = 0, updated = 0;
+  const selfEmail = process.env.GMAIL_SELF_EMAIL;
+  const selfNames = ['karthik', 'karthik shashidhar'];
+  let added = 0, updated = 0, skipped = 0;
   for (const commitment of commitments) {
     if (!commitment.contactName) continue;
+
+    // Skip self - don't add yourself as a contact
+    const nameLower = commitment.contactName.toLowerCase();
+    if (selfNames.some(s => nameLower.includes(s)) || nameLower.includes(selfEmail?.split('@')[0])) {
+      skipped++;
+      continue;
+    }
 
     upsertContact(db, {
       name: commitment.contactName,
@@ -90,7 +99,7 @@ async function dailyScan() {
     else updated++;
   }
 
-  console.log(`CRM updated: ${added} new contacts, ${updated} updated.`);
+  console.log(`CRM updated: ${added} new, ${updated} updated, ${skipped} self-skipped.`);
 
   console.log('Sending daily summary...');
   const jobCalendarEvents = calendarClassified.length > 0

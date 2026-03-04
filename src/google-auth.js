@@ -43,10 +43,22 @@ function getOAuth2Client() {
 }
 
 async function authorize() {
-  const oauth2 = getOAuth2Client();
+  const creds = loadCredentials();
+  const { client_id, client_secret } = creds.installed || creds.web;
+
   if (fs.existsSync(TOKEN_PATH)) {
+    const oauth2 = getOAuth2Client();
     return oauth2;
   }
+
+  // Start local server first to get the actual port
+  const server = http.createServer();
+  await new Promise((resolve) => server.listen(0, resolve));
+  const port = server.address().port;
+  const redirectUri = `http://localhost:${port}`;
+
+  // Create OAuth2 client with the actual redirect URI
+  const oauth2 = new google.auth.OAuth2(client_id, client_secret, redirectUri);
 
   const authUrl = oauth2.generateAuthUrl({
     access_type: 'offline',
@@ -55,18 +67,16 @@ async function authorize() {
   });
 
   console.log('Authorize this app by visiting:\n', authUrl);
+  console.log(`\nWaiting for authorization on ${redirectUri} ...`);
 
   const code = await new Promise((resolve) => {
-    const server = http.createServer((req, res) => {
+    server.on('request', (req, res) => {
       const query = url.parse(req.url, true).query;
       if (query.code) {
         res.end('Authorization successful! You can close this tab.');
         server.close();
         resolve(query.code);
       }
-    });
-    server.listen(3000, () => {
-      console.log('Waiting for authorization on http://localhost:3000 ...');
     });
   });
 
