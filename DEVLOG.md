@@ -2,6 +2,47 @@
 
 ---
 
+## 2026-03-04 — Setup, debugging, and first successful run
+
+### User prompts this session (continued)
+
+> "ok i need you to help me with all this"
+>
+> "i've named the app as 'Daily CRM'. the json is at ~/Downloads/client_secret*"
+>
+> "[gmail address and Google Sheet URL shared]"
+>
+> "don't write into this. write into a new tab"
+>
+> "a few things - we have multiple lines here by company. almost like the DB was dumped there. also my name appears twice"
+>
+> "ok let's do whatsapp"
+
+### What changed
+
+**Google OAuth auth flow** - The credentials JSON had `http://localhost` as redirect URI (port 80), but our server was on port 3000, and port 80 requires sudo. Fixed by using a dynamic port - the server listens on port 0 (OS picks a free port), then uses that port in the OAuth redirect URI. Desktop app credentials allow any `localhost:PORT` redirect.
+
+**Batch classification** - The original classifier made one API call per email (100 emails = 100 calls). Hit the 50 req/min rate limit on Tier 1. Fixed by batching 20 messages into a single API call with numbered responses. 100 emails now takes 5 API calls instead of 100.
+
+**Self-filtering** - The LLM extractor was returning [name]'s own name as a contact (from outgoing emails). Two fixes: (1) updated the extractor prompt to explicitly say "extract info about the OTHER person, not [name]", and (2) added a name-based filter in the orchestrator to skip any contacts matching the user's name.
+
+**Sheet tab name** - The user's Google Sheet had tabs named "2026", "2020", etc. - no "Sheet1". Added `SHEET_TAB` env var (defaults to "CRM"), and `initSheet` now auto-creates the tab if it doesn't exist via the Sheets batchUpdate API.
+
+**Node path for Apple Silicon** - launchd plists had `/usr/local/bin/node` but Homebrew on Apple Silicon installs to `/opt/homebrew/bin/node`.
+
+**Model ID** - `claude-sonnet-4-6-20250514` doesn't exist on the API. Fixed to `claude-sonnet-4-20250514`.
+
+### First successful run results
+
+- 100 emails scanned (7-day window)
+- 26 classified as job-related by Haiku
+- 12 unique contacts extracted and added to CRM sheet
+- Daily summary email sent successfully
+- Total runtime: ~3 minutes
+- WhatsApp collector connected and capturing messages
+
+---
+
 ## 2026-03-04 — Initial build
 
 ### User prompts this session
