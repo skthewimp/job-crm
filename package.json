@@ -9,7 +9,8 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "auth:google": "node scripts/google-auth-setup.js",
-    "whatsapp": "node src/whatsapp/collector.js"
+    "whatsapp": "node src/whatsapp/collector.js",
+    "scan": "node src/daily-scan.js"
   },
   "keywords": [],
   "author": "",

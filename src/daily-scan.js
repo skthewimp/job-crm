@@ -1,0 +1,111 @@
+require('dotenv').config();
+const { initDb, getMessagesSince, upsertContact } = require('./db');
+const { scanEmails } = require('./gmail/scanner');
+const { scanCalendar } = require('./calendar/scanner');
+const { classifyMessages } = require('./llm/classifier');
+const { extractCommitments } = require('./llm/extractor');
+const { initSheet, upsertRow } = require('./sheets/updater');
+const { sendDailySummary } = require('./summary/emailer');
+
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+
+async function dailyScan() {
+  console.log(`[${new Date().toISOString()}] Starting daily scan...`);
+  const db = initDb();
+  const sheetId = process.env.GOOGLE_SHEET_ID;
+  const today = new Date().toISOString().split('T')[0];
+
+  await initSheet(sheetId);
+
+  console.log('Scanning Gmail, Calendar, and WhatsApp...');
+  const [emailMessages, calendarEvents, whatsappMessages] = await Promise.all([
+    scanEmails(db).catch(err => {
+      console.error('Gmail scan failed:', err.message);
+      return [];
+    }),
+    scanCalendar().catch(err => {
+      console.error('Calendar scan failed:', err.message);
+      return [];
+    }),
+    Promise.resolve(getMessagesSince(db, 'whatsapp', Date.now() - SEVEN_DAYS_MS))
+  ]);
+
+  console.log(`Found: ${emailMessages.length} emails, ${calendarEvents.length} calendar events, ${whatsappMessages.length} WhatsApp messages`);
+
+  console.log('Classifying messages...');
+  const allMessages = [
+    ...emailMessages.map(m => ({ ...m, source: 'Email' })),
+    ...whatsappMessages.map(m => ({
+      body: m.body,
+      contactName: m.contact_name,
+      source: 'WhatsApp'
+    }))
+  ];
+
+  const jobRelated = await classifyMessages(allMessages);
+  console.log(`${jobRelated.length} job-related messages found.`);
+
+  console.log('Extracting commitments...');
+  const commitments = [];
+  for (const msg of jobRelated) {
+    const extracted = await extractCommitments(msg.body, msg.contactName, today);
+    if (extracted) {
+      extracted.channel = msg.source;
+      commitments.push(extracted);
+    }
+  }
+
+  const calendarClassified = await classifyMessages(
+    calendarEvents.map(e => ({
+      body: `${e.summary} ${e.description}`.trim(),
+      contactName: e.attendees?.[0]?.name || e.summary,
+      source: 'Calendar'
+    }))
+  );
+
+  console.log('Updating CRM...');
+  let added = 0, updated = 0;
+  for (const commitment of commitments) {
+    if (!commitment.contactName) continue;
+
+    upsertContact(db, {
+      name: commitment.contactName,
+      company: commitment.company,
+      role: commitment.roleTitle,
+      relationshipType: commitment.relationshipType,
+      channel: commitment.channel,
+      lastInteractionDate: today,
+      lastInteractionSummary: commitment.interactionSummary,
+      nextFollowUpDate: commitment.followUpDate,
+      followUpAction: commitment.followUpAction,
+      status: commitment.status,
+      roleDiscussed: commitment.roleDiscussed
+    });
+
+    const result = await upsertRow(sheetId, {
+      ...commitment,
+      lastInteractionDate: today
+    });
+    if (result.action === 'added') added++;
+    else updated++;
+  }
+
+  console.log(`CRM updated: ${added} new contacts, ${updated} updated.`);
+
+  console.log('Sending daily summary...');
+  const jobCalendarEvents = calendarClassified.length > 0
+    ? calendarEvents.filter((_, i) =>
+        calendarClassified.some(c => c.body?.includes(calendarEvents[i]?.summary))
+      )
+    : calendarEvents;
+
+  await sendDailySummary(db, jobCalendarEvents);
+
+  db.close();
+  console.log(`[${new Date().toISOString()}] Daily scan complete.`);
+}
+
+dailyScan().catch(err => {
+  console.error('Daily scan failed:', err);
+  process.exit(1);
+});
