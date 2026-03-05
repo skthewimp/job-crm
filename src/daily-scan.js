@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { initDb, getMessagesSince, upsertContact } = require('./db');
+const { initDb, getMessagesSince, upsertCompany } = require('./db');
 const { scanEmails } = require('./gmail/scanner');
 const { scanCalendar } = require('./calendar/scanner');
 const { classifyMessages } = require('./llm/classifier');
@@ -67,39 +67,51 @@ async function dailyScan() {
   const selfEmail = process.env.GMAIL_SELF_EMAIL;
   const selfNames = ['karthik', 'karthik shashidhar'];
   let added = 0, updated = 0, skipped = 0;
+
   for (const commitment of commitments) {
     if (!commitment.contactName) continue;
 
-    // Skip self - don't add yourself as a contact
+    // Skip self
     const nameLower = commitment.contactName.toLowerCase();
     if (selfNames.some(s => nameLower.includes(s)) || nameLower.includes(selfEmail?.split('@')[0])) {
       skipped++;
       continue;
     }
 
-    upsertContact(db, {
-      name: commitment.contactName,
+    // Skip if no company
+    if (!commitment.company) {
+      skipped++;
+      continue;
+    }
+
+    // Upsert into companies table
+    upsertCompany(db, {
       company: commitment.company,
-      role: commitment.roleTitle,
-      relationshipType: commitment.relationshipType,
+      contactName: commitment.contactName,
+      roleDiscussed: commitment.roleDiscussed,
+      status: commitment.status,
       channel: commitment.channel,
       lastInteractionDate: today,
-      lastInteractionSummary: commitment.interactionSummary,
-      nextFollowUpDate: commitment.followUpDate,
+      interactionSummary: commitment.interactionSummary,
+      followUpDate: commitment.followUpDate,
       followUpAction: commitment.followUpAction,
-      status: commitment.status,
-      roleDiscussed: commitment.roleDiscussed
     });
 
-    const result = await upsertRow(sheetId, {
-      ...commitment,
-      lastInteractionDate: today
-    });
-    if (result.action === 'added') added++;
-    else updated++;
+    // Upsert into Google Sheet (one row per company)
+    try {
+      const result = await upsertRow(sheetId, {
+        ...commitment,
+        lastInteractionDate: today
+      });
+      if (result.action === 'added') added++;
+      else if (result.action === 'updated') updated++;
+      else skipped++;
+    } catch (err) {
+      console.error(`  Sheet update failed for ${commitment.company}:`, err.message);
+    }
   }
 
-  console.log(`CRM updated: ${added} new, ${updated} updated, ${skipped} self-skipped.`);
+  console.log(`CRM updated: ${added} new, ${updated} updated, ${skipped} skipped.`);
 
   console.log('Sending daily summary...');
   const jobCalendarEvents = calendarClassified.length > 0
