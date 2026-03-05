@@ -5,17 +5,16 @@ const { getOAuth2Client } = require('../google-auth');
 const SHEET_TAB = process.env.SHEET_TAB || 'CRM';
 
 const SHEET_COLUMNS = [
-  'Contact Name', 'Company', 'Role/Title', 'Relationship Type',
-  'Source', 'Channel', 'First Contact Date', 'Last Interaction Date',
+  'Company', 'Contacts', 'Role Discussed', 'Status',
+  'Channel', 'First Contact Date', 'Last Interaction Date',
   'Last Interaction Summary', 'Next Follow-up Date', 'Follow-up Action',
-  'Status', 'Notes', 'Role Discussed'
+  'Notes'
 ];
 
 async function initSheet(sheetId) {
   const auth = getOAuth2Client();
   const sheets = google.sheets({ version: 'v4', auth });
 
-  // Check if tab exists, create it if not
   const meta = await sheets.spreadsheets.get({ spreadsheetId: sheetId });
   const tabExists = meta.data.sheets.some(s => s.properties.title === SHEET_TAB);
 
@@ -28,12 +27,11 @@ async function initSheet(sheetId) {
     });
   }
 
-  // Check if header row exists
   let res;
   try {
     res = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetId,
-      range: `${SHEET_TAB}!A1:N1`
+      range: `${SHEET_TAB}!A1:K1`
     });
   } catch {
     res = { data: {} };
@@ -42,7 +40,7 @@ async function initSheet(sheetId) {
   if (!res.data.values || res.data.values.length === 0) {
     await sheets.spreadsheets.values.update({
       spreadsheetId: sheetId,
-      range: `${SHEET_TAB}!A1:N1`,
+      range: `${SHEET_TAB}!A1:K1`,
       valueInputOption: 'RAW',
       requestBody: { values: [SHEET_COLUMNS] }
     });
@@ -55,7 +53,7 @@ async function getAllRows(sheetId) {
 
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${SHEET_TAB}!A:N`
+    range: `${SHEET_TAB}!A:K`
   });
 
   const rows = res.data.values || [];
@@ -63,20 +61,17 @@ async function getAllRows(sheetId) {
 
   return rows.slice(1).map((row, idx) => ({
     rowIndex: idx + 2,
-    name: row[0] || '',
-    company: row[1] || '',
-    role: row[2] || '',
-    relationshipType: row[3] || '',
-    source: row[4] || '',
-    channel: row[5] || '',
-    firstContactDate: row[6] || '',
-    lastInteractionDate: row[7] || '',
-    lastInteractionSummary: row[8] || '',
-    nextFollowUpDate: row[9] || '',
-    followUpAction: row[10] || '',
-    status: row[11] || '',
-    notes: row[12] || '',
-    roleDiscussed: row[13] || ''
+    company: row[0] || '',
+    contacts: row[1] || '',
+    roleDiscussed: row[2] || '',
+    status: row[3] || '',
+    channel: row[4] || '',
+    firstContactDate: row[5] || '',
+    lastInteractionDate: row[6] || '',
+    lastInteractionSummary: row[7] || '',
+    nextFollowUpDate: row[8] || '',
+    followUpAction: row[9] || '',
+    notes: row[10] || ''
   }));
 }
 
@@ -85,62 +80,64 @@ async function upsertRow(sheetId, contact) {
   const sheets = google.sheets({ version: 'v4', auth });
   const existing = await getAllRows(sheetId);
 
+  const company = (contact.company || '').trim();
+  if (!company) return { action: 'skipped', reason: 'no company' };
+
   const match = existing.find(r =>
-    r.name.toLowerCase() === (contact.contactName || '').toLowerCase() &&
-    r.company.toLowerCase() === (contact.company || '').toLowerCase()
+    r.company.toLowerCase() === company.toLowerCase()
   );
 
-  const rowData = [
-    contact.contactName || '',
-    contact.company || '',
-    contact.roleTitle || '',
-    contact.relationshipType || '',
-    contact.source || '',
-    contact.channel || '',
-    contact.firstContactDate || '',
-    contact.lastInteractionDate || new Date().toISOString().split('T')[0],
-    contact.interactionSummary || '',
-    contact.followUpDate || '',
-    contact.followUpAction || '',
-    contact.status || 'Active',
-    contact.notes || '',
-    contact.roleDiscussed || ''
-  ];
-
   if (match) {
+    // Merge contact name into existing contacts list
+    const existingContacts = match.contacts.split(',').map(s => s.trim()).filter(Boolean);
+    const newName = (contact.contactName || '').trim();
+    if (newName && !existingContacts.some(n => n.toLowerCase() === newName.toLowerCase())) {
+      existingContacts.push(newName);
+    }
+
     const updatedRow = [
-      rowData[0] || match.name,
-      rowData[1] || match.company,
-      rowData[2] || match.role,
-      rowData[3] || match.relationshipType,
-      rowData[4] || match.source,
-      rowData[5] || match.channel,
-      match.firstContactDate || rowData[6],
-      rowData[7] || match.lastInteractionDate,
-      rowData[8] || match.lastInteractionSummary,
-      rowData[9] || match.nextFollowUpDate,
-      rowData[10] || match.followUpAction,
-      rowData[11] || match.status,
-      match.notes ? `${match.notes}\n${rowData[12]}`.trim() : rowData[12],
-      rowData[13] || match.roleDiscussed
+      match.company,
+      existingContacts.join(', '),
+      contact.roleDiscussed || match.roleDiscussed,
+      contact.status || match.status,
+      contact.channel || match.channel,
+      match.firstContactDate || contact.firstContactDate || '',
+      contact.lastInteractionDate || match.lastInteractionDate,
+      contact.interactionSummary || match.lastInteractionSummary,
+      contact.followUpDate || match.nextFollowUpDate,
+      contact.followUpAction || match.followUpAction,
+      match.notes ? `${match.notes}\n${contact.notes || ''}`.trim() : (contact.notes || '')
     ];
 
     await sheets.spreadsheets.values.update({
       spreadsheetId: sheetId,
-      range: `${SHEET_TAB}!A${match.rowIndex}:N${match.rowIndex}`,
+      range: `${SHEET_TAB}!A${match.rowIndex}:K${match.rowIndex}`,
       valueInputOption: 'RAW',
       requestBody: { values: [updatedRow] }
     });
     return { action: 'updated', row: match.rowIndex };
   } else {
-    rowData[6] = rowData[6] || new Date().toISOString().split('T')[0];
+    const rowData = [
+      company,
+      contact.contactName || '',
+      contact.roleDiscussed || '',
+      contact.status || 'Active',
+      contact.channel || '',
+      contact.firstContactDate || new Date().toISOString().split('T')[0],
+      contact.lastInteractionDate || new Date().toISOString().split('T')[0],
+      contact.interactionSummary || '',
+      contact.followUpDate || '',
+      contact.followUpAction || '',
+      contact.notes || ''
+    ];
+
     await sheets.spreadsheets.values.append({
       spreadsheetId: sheetId,
-      range: `${SHEET_TAB}!A:N`,
+      range: `${SHEET_TAB}!A:K`,
       valueInputOption: 'RAW',
       requestBody: { values: [rowData] }
     });
-    return { action: 'added', name: contact.contactName };
+    return { action: 'added', company };
   }
 }
 

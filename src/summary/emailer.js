@@ -1,6 +1,6 @@
 const { google } = require('googleapis');
 const { getOAuth2Client } = require('../google-auth');
-const { getContactsDueForFollowUp } = require('../db');
+const { getCompaniesDueForFollowUp } = require('../db');
 
 async function sendDailySummary(db, calendarEvents) {
   const auth = getOAuth2Client();
@@ -8,16 +8,25 @@ async function sendDailySummary(db, calendarEvents) {
   const selfEmail = process.env.GMAIL_SELF_EMAIL;
   const today = new Date().toISOString().split('T')[0];
 
-  const overdue = getContactsDueForFollowUp(db, today);
-  const todayFollowUps = overdue.filter(c => c.next_follow_up_date === today);
-  const overdueFollowUps = overdue.filter(c => c.next_follow_up_date < today);
+  const allDue = getCompaniesDueForFollowUp(db, today);
+  const overdue = allDue.filter(c => c.next_follow_up_date < today);
+  const dueToday = allDue.filter(c => c.next_follow_up_date === today);
 
-  const html = buildEmailHtml(todayFollowUps, overdueFollowUps, calendarEvents, today);
+  // Only job-related calendar events for next 3 days
+  const jobEvents = (calendarEvents || []).filter(e => e && e.summary);
+
+  const totalItems = overdue.length + dueToday.length + jobEvents.length;
+
+  const html = buildEmailHtml(overdue, dueToday, jobEvents, today);
+
+  const subject = totalItems > 0
+    ? `Job Hunt: ${totalItems} to-do${totalItems > 1 ? 's' : ''} for ${today}`
+    : `Job Hunt: Nothing due today (${today})`;
 
   const message = [
     `To: ${selfEmail}`,
     'Content-Type: text/html; charset=utf-8',
-    `Subject: Job Hunt CRM - Daily Summary for ${today}`,
+    `Subject: ${subject}`,
     '',
     html
   ].join('\n');
@@ -36,47 +45,56 @@ async function sendDailySummary(db, calendarEvents) {
   console.log('Daily summary email sent.');
 }
 
-function buildEmailHtml(todayFollowUps, overdueFollowUps, calendarEvents, today) {
-  let html = `<h2>Job Hunt CRM - ${today}</h2>`;
+function buildEmailHtml(overdue, dueToday, calendarEvents, today) {
+  let html = '<div style="font-family:system-ui,sans-serif;max-width:600px;margin:0 auto">';
 
-  if (overdueFollowUps.length > 0) {
-    html += '<h3 style="color: #cc0000;">Overdue Follow-ups</h3><ul>';
-    for (const c of overdueFollowUps) {
-      html += `<li><strong>${c.name}</strong> (${c.company || 'Unknown'}) - Due: ${c.next_follow_up_date}<br/>`;
-      html += `Action: ${c.follow_up_action || 'Follow up'}</li>`;
-    }
-    html += '</ul>';
+  if (overdue.length === 0 && dueToday.length === 0 && calendarEvents.length === 0) {
+    html += '<p>Nothing due today. No overdue items.</p></div>';
+    return html;
   }
 
-  if (todayFollowUps.length > 0) {
-    html += '<h3 style="color: #0066cc;">Due Today</h3><ul>';
-    for (const c of todayFollowUps) {
-      html += `<li><strong>${c.name}</strong> (${c.company || 'Unknown'})<br/>`;
-      html += `Action: ${c.follow_up_action || 'Follow up'}</li>`;
-    }
-    html += '</ul>';
+  // Overdue - these come first, they're the most urgent
+  if (overdue.length > 0) {
+    html += '<h3 style="color:#cc0000;margin-bottom:8px">Overdue</h3>';
+    html += formatTodos(overdue, true);
   }
 
-  if (calendarEvents && calendarEvents.length > 0) {
-    html += '<h3>Upcoming Calendar Events</h3><ul>';
+  // Due today
+  if (dueToday.length > 0) {
+    html += '<h3 style="color:#0066cc;margin-bottom:8px">Today</h3>';
+    html += formatTodos(dueToday, false);
+  }
+
+  // Calendar events
+  if (calendarEvents.length > 0) {
+    html += '<h3 style="margin-bottom:8px">Upcoming meetings</h3><ul style="padding-left:20px">';
     for (const e of calendarEvents) {
       const time = new Date(e.start).toLocaleString('en-IN', {
         timeZone: 'Asia/Kolkata',
         dateStyle: 'medium',
         timeStyle: 'short'
       });
-      html += `<li><strong>${e.summary}</strong> - ${time}`;
+      html += `<li>${e.summary} - ${time}`;
       if (e.location) html += ` (${e.location})`;
       html += '</li>';
     }
     html += '</ul>';
   }
 
-  if (overdueFollowUps.length === 0 && todayFollowUps.length === 0 &&
-      (!calendarEvents || calendarEvents.length === 0)) {
-    html += '<p>No follow-ups due and no upcoming events. Enjoy the day!</p>';
-  }
+  html += '</div>';
+  return html;
+}
 
+function formatTodos(items, showDate) {
+  let html = '<ul style="padding-left:20px;margin-top:4px">';
+  for (const c of items) {
+    const action = c.follow_up_action || 'Follow up';
+    const who = c.contacts ? `${c.company} (${c.contacts})` : c.company;
+    html += `<li><strong>${action}</strong> - ${who}`;
+    if (showDate) html += ` <span style="color:#999">[was due ${c.next_follow_up_date}]</span>`;
+    html += '</li>';
+  }
+  html += '</ul>';
   return html;
 }
 

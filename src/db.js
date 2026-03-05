@@ -43,6 +43,23 @@ function initDb(dbPath = './data/crm.sqlite') {
       updated_at INTEGER DEFAULT (unixepoch() * 1000),
       UNIQUE(name, company)
     );
+
+    CREATE TABLE IF NOT EXISTS companies (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      company TEXT NOT NULL UNIQUE,
+      contacts TEXT,
+      role_discussed TEXT,
+      status TEXT DEFAULT 'Active',
+      channel TEXT,
+      first_contact_date TEXT,
+      last_interaction_date TEXT,
+      last_interaction_summary TEXT,
+      next_follow_up_date TEXT,
+      follow_up_action TEXT,
+      notes TEXT,
+      created_at INTEGER DEFAULT (unixepoch() * 1000),
+      updated_at INTEGER DEFAULT (unixepoch() * 1000)
+    );
   `);
 
   return db;
@@ -62,6 +79,89 @@ function getMessagesSince(db, source, sinceTimestamp) {
   `).all(source, sinceTimestamp);
 }
 
+function upsertCompany(db, data) {
+  const company = (data.company || '').trim();
+  if (!company) return null;
+
+  const existing = db.prepare('SELECT * FROM companies WHERE company = ?').get(company);
+
+  if (existing) {
+    // Merge contact name into existing list
+    const existingContacts = (existing.contacts || '').split(',').map(s => s.trim()).filter(Boolean);
+    const newName = (data.contactName || '').trim();
+    if (newName && !existingContacts.some(n => n.toLowerCase() === newName.toLowerCase())) {
+      existingContacts.push(newName);
+    }
+
+    const fields = [];
+    const values = [];
+
+    fields.push('contacts = ?');
+    values.push(existingContacts.join(', '));
+
+    const updatable = {
+      role_discussed: data.roleDiscussed,
+      status: data.status,
+      channel: data.channel,
+      last_interaction_date: data.lastInteractionDate,
+      last_interaction_summary: data.interactionSummary,
+      next_follow_up_date: data.followUpDate,
+      follow_up_action: data.followUpAction,
+    };
+
+    for (const [field, val] of Object.entries(updatable)) {
+      if (val) {
+        fields.push(`${field} = ?`);
+        values.push(val);
+      }
+    }
+
+    if (data.notes) {
+      fields.push('notes = ?');
+      values.push(existing.notes ? `${existing.notes}\n${data.notes}`.trim() : data.notes);
+    }
+
+    fields.push('updated_at = ?');
+    values.push(Date.now());
+    values.push(existing.id);
+
+    db.prepare(`UPDATE companies SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+    return existing.id;
+  } else {
+    const stmt = db.prepare(`
+      INSERT INTO companies (company, contacts, role_discussed, status, channel,
+        first_contact_date, last_interaction_date, last_interaction_summary,
+        next_follow_up_date, follow_up_action, notes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const result = stmt.run(
+      company,
+      data.contactName || null,
+      data.roleDiscussed || null,
+      data.status || 'Active',
+      data.channel || null,
+      data.firstContactDate || new Date().toISOString().split('T')[0],
+      data.lastInteractionDate || null,
+      data.interactionSummary || null,
+      data.followUpDate || null,
+      data.followUpAction || null,
+      data.notes || null
+    );
+    return result.lastInsertRowid;
+  }
+}
+
+function getCompaniesDueForFollowUp(db, date) {
+  return db.prepare(`
+    SELECT * FROM companies
+    WHERE next_follow_up_date IS NOT NULL
+      AND next_follow_up_date <= ?
+      AND status NOT IN ('Closed', 'Offer')
+    ORDER BY next_follow_up_date ASC
+  `).all(date);
+}
+
+// Keep old functions for backward compat during migration
 function upsertContact(db, contact) {
   const keyMap = {
     relationshipType: 'relationship_type',
@@ -73,7 +173,6 @@ function upsertContact(db, contact) {
     firstContactDate: 'first_contact_date'
   };
 
-  // Map camelCase keys to snake_case
   for (const [jsKey, dbKey] of Object.entries(keyMap)) {
     if (contact[jsKey] !== undefined) {
       contact[dbKey] = contact[jsKey];
@@ -145,5 +244,6 @@ function getContactsDueForFollowUp(db, date) {
 
 module.exports = {
   initDb, insertMessage, getMessagesSince,
-  upsertContact, getContactByNameAndCompany, getContacts, getContactsDueForFollowUp
+  upsertContact, getContactByNameAndCompany, getContacts, getContactsDueForFollowUp,
+  upsertCompany, getCompaniesDueForFollowUp
 };
