@@ -43,6 +43,7 @@ async function dailyScan() {
       body: m.body,
       contactName: m.contact_name,
       source: 'WhatsApp',
+      direction: m.direction,
       messageDate: tsToDate(m.timestamp)
     }))
   ];
@@ -53,7 +54,7 @@ async function dailyScan() {
   console.log('Extracting commitments...');
   const commitments = [];
   for (const msg of jobRelated) {
-    const extracted = await extractCommitments(msg.body, msg.contactName, msg.messageDate, today);
+    const extracted = await extractCommitments(msg.body, msg.contactName, msg.messageDate, today, msg.direction);
     if (extracted) {
       extracted.channel = msg.source;
       extracted.messageDate = msg.messageDate;
