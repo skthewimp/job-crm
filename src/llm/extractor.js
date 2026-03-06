@@ -22,13 +22,22 @@ async function callWithRetry(fn, retries = MAX_RETRIES) {
   }
 }
 
-async function extractCommitments(messageText, contactName, todayDate) {
+async function extractCommitments(messageText, contactName, messageDate, todayDate) {
   const response = await callWithRetry(() => client.messages.create({
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-sonnet-4-6',
     max_tokens: 500,
     messages: [{
       role: 'user',
-      content: `Analyze this job-hunt related message and extract structured data about the OTHER person (not Karthik Shashidhar, who is the job seeker). Today's date is ${todayDate}.
+      content: `Analyze this job-hunt related message and extract structured data about the OTHER person (not Karthik Shashidhar, who is the job seeker).
+
+This message was sent on: ${messageDate}
+Today's date is: ${todayDate}
+
+CRITICAL: All relative time references in the message ("tomorrow", "next week", "let's talk at 9", "Monday", etc.) are relative to the MESSAGE DATE (${messageDate}), NOT today. For example:
+- If the message was sent on 2026-03-01 and says "let's talk Monday", that means 2026-03-03 (the Monday after March 1st)
+- If the message says "follow up next week" and was sent on 2026-02-25, the follow-up date is around 2026-03-02
+- If the message says "let's talk at 9" with no future date, it means ${messageDate} at 9:00 — this is ALREADY PAST, so set followUpDate to null
+- Only set a followUpDate if the resolved date is today (${todayDate}) or later. If the follow-up date has already passed, set followUpDate to null.
 
 The job seeker is Karthik Shashidhar (REDACTED_EMAIL). Extract info about the other person they are communicating with.
 
@@ -43,8 +52,8 @@ Return a JSON object with these fields (use null if not found):
   "relationshipType": "Recruiter | Hiring Manager | Referral | Network contact",
   "roleDiscussed": "specific job role being discussed for Karthik",
   "interactionSummary": "one-line summary of this exchange",
-  "followUpDate": "YYYY-MM-DD if a specific follow-up date is mentioned or implied",
-  "followUpAction": "what needs to be done by the follow-up date",
+  "followUpDate": "YYYY-MM-DD — only if a concrete future follow-up is needed (on or after ${todayDate}), otherwise null",
+  "followUpAction": "what needs to be done by the follow-up date, or null if no action pending",
   "status": "Active | Waiting | Interview Scheduled"
 }
 
