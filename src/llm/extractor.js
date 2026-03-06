@@ -22,43 +22,47 @@ async function callWithRetry(fn, retries = MAX_RETRIES) {
   }
 }
 
-async function extractCommitments(messageText, contactName, messageDate, todayDate) {
+async function extractCommitments(messageText, contactName, messageDate, todayDate, direction) {
+  const senderLine = direction === 'outgoing'
+    ? `This message was SENT BY Karthik Shashidhar TO ${contactName}.`
+    : direction === 'incoming'
+      ? `This message was SENT BY ${contactName} TO Karthik Shashidhar.`
+      : `Message between Karthik Shashidhar and ${contactName} (direction unknown).`;
+
   const response = await callWithRetry(() => client.messages.create({
     model: 'claude-sonnet-4-6',
     max_tokens: 500,
     messages: [{
       role: 'user',
-      content: `Analyze this job-hunt related message and extract structured data about the OTHER person (not Karthik Shashidhar, who is the job seeker).
+      content: `Analyze this job-hunt related message and extract structured data.
 
+${senderLine}
 This message was sent on: ${messageDate}
 Today's date is: ${todayDate}
 
+WHO IS WHO:
+- Karthik Shashidhar (REDACTED_EMAIL) is the job seeker. He is the user of this CRM.
+- ${contactName} is the other person.
+- "I", "me", "my" in the message refers to whoever SENT the message (see above).
+- If the message is outgoing (sent by Karthik), then "I will send you my resume" means KARTHIK will send his resume.
+- If the message is incoming (sent by ${contactName}), then "Can you help me?" means ${contactName} is asking for help.
+
 DATE RULES:
-1. All relative time references ("tomorrow", "next week", "Monday", etc.) are relative to the MESSAGE DATE (${messageDate}), NOT today.
-2. ALWAYS resolve to an absolute YYYY-MM-DD date.
-3. KEEP the date even if it's in the past — past dates become overdue reminders.
+1. Resolve all relative dates ("tomorrow", "next week", "Monday") relative to the MESSAGE DATE (${messageDate}), NOT today.
+2. Resolve to absolute YYYY-MM-DD format.
+3. Keep past dates — they become overdue reminders.
 
-FOLLOW-UP RULES — THIS IS CRITICAL:
-Only set followUpDate/followUpAction for things KARTHIK committed to doing or needs to act on. These are actionable to-dos for Karthik.
+FOLLOW-UP RULES:
+Only set followUpDate/followUpAction for things KARTHIK needs to act on:
+- Karthik said he would do something → follow-up on that date
+- Karthik asked for something and hasn't received it → nudge follow-up
+- Other person promised to send something → nudge follow-up if enough time has passed
+Do NOT set follow-ups for:
+- Meetings/calls ("let's talk tomorrow") — can't verify if they happened
+- General pleasantries or discussion with no commitment
 
-SET a follow-up when Karthik said or needs to:
-- "I'll send you my resume by Friday" → followUpDate: that Friday, action: "Send resume to [person]"
-- "Let me follow up next week" → followUpDate: next Monday, action: "Follow up with [person] about [topic]"
-- "I'll ping you after the long weekend" → followUpDate: Tuesday after weekend, action: "Ping [person]"
-- "Can you send me the JD?" (Karthik asking) → followUpDate: null (ball is in their court)
-- Someone says "I'll share the JD" → followUpDate: a few days later, action: "Follow up if JD not received from [person]"
+Extract info about the OTHER person (${contactName}), not Karthik.
 
-Do NOT set a follow-up for:
-- "Let's talk tomorrow" / "Let's connect at 9" / "Can we chat Monday?" — these are meetings that may or may not have happened. We have no way to verify, so don't track them.
-- "Nice to meet you" / "Thanks for your time" — no action needed.
-- General discussion with no commitment from either side.
-- The other person saying they will do something where Karthik just needs to wait (unless enough time has passed that Karthik should nudge them).
-
-In short: followUpDate is Karthik's to-do list. If Karthik doesn't need to DO something, don't set it.
-
-The job seeker is Karthik Shashidhar (REDACTED_EMAIL). Extract info about the other person they are communicating with.
-
-Message from/about: ${contactName}
 Message: "${messageText}"
 
 Return a JSON object with these fields (use null if not found):
@@ -70,7 +74,7 @@ Return a JSON object with these fields (use null if not found):
   "roleDiscussed": "specific job role being discussed for Karthik",
   "interactionSummary": "one-line summary of this exchange",
   "followUpDate": "YYYY-MM-DD — only if Karthik has a concrete action to take, otherwise null",
-  "followUpAction": "what Karthik needs to do (verb phrase: 'Send resume to...', 'Follow up with... about...'), or null",
+  "followUpAction": "what Karthik needs to do (verb phrase), or null",
   "status": "Active | Waiting | Interview Scheduled"
 }
 
