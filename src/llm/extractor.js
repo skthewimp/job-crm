@@ -33,15 +33,28 @@ async function extractCommitments(messageText, contactName, messageDate, todayDa
 This message was sent on: ${messageDate}
 Today's date is: ${todayDate}
 
-CRITICAL DATE RULES:
-1. All relative time references ("tomorrow", "next week", "Monday", "end of week", etc.) are relative to the MESSAGE DATE (${messageDate}), NOT today.
-2. ALWAYS resolve to an absolute date in YYYY-MM-DD format. Examples:
-   - Message sent 2026-03-01 says "let's talk Monday" → followUpDate: "2026-03-03"
-   - Message sent 2026-02-25 says "I'll ping you next week" → followUpDate: "2026-03-02"
-   - Message sent 2026-03-04 says "will send by Friday" → followUpDate: "2026-03-06"
-3. If the message says "let's talk at 9" or "call me today" with no future date reference, the follow-up date is the message date itself: ${messageDate}
-4. KEEP the date even if it's in the past. Past dates become overdue reminders. Do NOT set to null just because the date has passed.
-5. Only set followUpDate to null if no follow-up action is mentioned at all.
+DATE RULES:
+1. All relative time references ("tomorrow", "next week", "Monday", etc.) are relative to the MESSAGE DATE (${messageDate}), NOT today.
+2. ALWAYS resolve to an absolute YYYY-MM-DD date.
+3. KEEP the date even if it's in the past — past dates become overdue reminders.
+
+FOLLOW-UP RULES — THIS IS CRITICAL:
+Only set followUpDate/followUpAction for things KARTHIK committed to doing or needs to act on. These are actionable to-dos for Karthik.
+
+SET a follow-up when Karthik said or needs to:
+- "I'll send you my resume by Friday" → followUpDate: that Friday, action: "Send resume to [person]"
+- "Let me follow up next week" → followUpDate: next Monday, action: "Follow up with [person] about [topic]"
+- "I'll ping you after the long weekend" → followUpDate: Tuesday after weekend, action: "Ping [person]"
+- "Can you send me the JD?" (Karthik asking) → followUpDate: null (ball is in their court)
+- Someone says "I'll share the JD" → followUpDate: a few days later, action: "Follow up if JD not received from [person]"
+
+Do NOT set a follow-up for:
+- "Let's talk tomorrow" / "Let's connect at 9" / "Can we chat Monday?" — these are meetings that may or may not have happened. We have no way to verify, so don't track them.
+- "Nice to meet you" / "Thanks for your time" — no action needed.
+- General discussion with no commitment from either side.
+- The other person saying they will do something where Karthik just needs to wait (unless enough time has passed that Karthik should nudge them).
+
+In short: followUpDate is Karthik's to-do list. If Karthik doesn't need to DO something, don't set it.
 
 The job seeker is Karthik Shashidhar (karthik.shashidhar@gmail.com). Extract info about the other person they are communicating with.
 
@@ -56,8 +69,8 @@ Return a JSON object with these fields (use null if not found):
   "relationshipType": "Recruiter | Hiring Manager | Referral | Network contact",
   "roleDiscussed": "specific job role being discussed for Karthik",
   "interactionSummary": "one-line summary of this exchange",
-  "followUpDate": "YYYY-MM-DD — the resolved absolute date when follow-up should happen, or null if no action mentioned",
-  "followUpAction": "what Karthik needs to do (e.g. 'Send resume', 'Follow up on role', 'Schedule call'), or null",
+  "followUpDate": "YYYY-MM-DD — only if Karthik has a concrete action to take, otherwise null",
+  "followUpAction": "what Karthik needs to do (verb phrase: 'Send resume to...', 'Follow up with... about...'), or null",
   "status": "Active | Waiting | Interview Scheduled"
 }
 
