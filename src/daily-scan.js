@@ -9,6 +9,10 @@ const { sendDailySummary } = require('./summary/emailer');
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
+function tsToDate(ts) {
+  return new Date(ts).toISOString().split('T')[0];
+}
+
 async function dailyScan() {
   console.log(`[${new Date().toISOString()}] Starting daily scan...`);
   const db = initDb();
@@ -34,11 +38,12 @@ async function dailyScan() {
 
   console.log('Classifying messages...');
   const allMessages = [
-    ...emailMessages.map(m => ({ ...m, source: 'Email' })),
+    ...emailMessages.map(m => ({ ...m, source: 'Email', messageDate: tsToDate(m.timestamp) })),
     ...whatsappMessages.map(m => ({
       body: m.body,
       contactName: m.contact_name,
-      source: 'WhatsApp'
+      source: 'WhatsApp',
+      messageDate: tsToDate(m.timestamp)
     }))
   ];
 
@@ -48,9 +53,10 @@ async function dailyScan() {
   console.log('Extracting commitments...');
   const commitments = [];
   for (const msg of jobRelated) {
-    const extracted = await extractCommitments(msg.body, msg.contactName, today);
+    const extracted = await extractCommitments(msg.body, msg.contactName, msg.messageDate, today);
     if (extracted) {
       extracted.channel = msg.source;
+      extracted.messageDate = msg.messageDate;
       commitments.push(extracted);
     }
   }
@@ -84,6 +90,9 @@ async function dailyScan() {
       continue;
     }
 
+    // Use the message date as last interaction date (not today)
+    const interactionDate = commitment.messageDate || today;
+
     // Upsert into companies table
     upsertCompany(db, {
       company: commitment.company,
@@ -91,7 +100,7 @@ async function dailyScan() {
       roleDiscussed: commitment.roleDiscussed,
       status: commitment.status,
       channel: commitment.channel,
-      lastInteractionDate: today,
+      lastInteractionDate: interactionDate,
       interactionSummary: commitment.interactionSummary,
       followUpDate: commitment.followUpDate,
       followUpAction: commitment.followUpAction,
@@ -101,7 +110,7 @@ async function dailyScan() {
     try {
       const result = await upsertRow(sheetId, {
         ...commitment,
-        lastInteractionDate: today
+        lastInteractionDate: interactionDate
       });
       if (result.action === 'added') added++;
       else if (result.action === 'updated') updated++;
