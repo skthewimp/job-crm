@@ -33,11 +33,15 @@ async function extractCommitments(messageText, contactName, messageDate, todayDa
 This message was sent on: ${messageDate}
 Today's date is: ${todayDate}
 
-CRITICAL: All relative time references in the message ("tomorrow", "next week", "let's talk at 9", "Monday", etc.) are relative to the MESSAGE DATE (${messageDate}), NOT today. For example:
-- If the message was sent on 2026-03-01 and says "let's talk Monday", that means 2026-03-03 (the Monday after March 1st)
-- If the message says "follow up next week" and was sent on 2026-02-25, the follow-up date is around 2026-03-02
-- If the message says "let's talk at 9" with no future date, it means ${messageDate} at 9:00 — this is ALREADY PAST, so set followUpDate to null
-- Only set a followUpDate if the resolved date is today (${todayDate}) or later. If the follow-up date has already passed, set followUpDate to null.
+CRITICAL DATE RULES:
+1. All relative time references ("tomorrow", "next week", "Monday", "end of week", etc.) are relative to the MESSAGE DATE (${messageDate}), NOT today.
+2. ALWAYS resolve to an absolute date in YYYY-MM-DD format. Examples:
+   - Message sent 2026-03-01 says "let's talk Monday" → followUpDate: "2026-03-03"
+   - Message sent 2026-02-25 says "I'll ping you next week" → followUpDate: "2026-03-02"
+   - Message sent 2026-03-04 says "will send by Friday" → followUpDate: "2026-03-06"
+3. If the message says "let's talk at 9" or "call me today" with no future date reference, the follow-up date is the message date itself: ${messageDate}
+4. KEEP the date even if it's in the past. Past dates become overdue reminders. Do NOT set to null just because the date has passed.
+5. Only set followUpDate to null if no follow-up action is mentioned at all.
 
 The job seeker is Karthik Shashidhar (karthik.shashidhar@gmail.com). Extract info about the other person they are communicating with.
 
@@ -52,8 +56,8 @@ Return a JSON object with these fields (use null if not found):
   "relationshipType": "Recruiter | Hiring Manager | Referral | Network contact",
   "roleDiscussed": "specific job role being discussed for Karthik",
   "interactionSummary": "one-line summary of this exchange",
-  "followUpDate": "YYYY-MM-DD — only if a concrete future follow-up is needed (on or after ${todayDate}), otherwise null",
-  "followUpAction": "what needs to be done by the follow-up date, or null if no action pending",
+  "followUpDate": "YYYY-MM-DD — the resolved absolute date when follow-up should happen, or null if no action mentioned",
+  "followUpAction": "what Karthik needs to do (e.g. 'Send resume', 'Follow up on role', 'Schedule call'), or null",
   "status": "Active | Waiting | Interview Scheduled"
 }
 

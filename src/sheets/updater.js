@@ -95,17 +95,28 @@ async function upsertRow(sheetId, contact) {
       existingContacts.push(newName);
     }
 
+    // Only update interaction details if this message is newer
+    const isNewer = (contact.lastInteractionDate || '') >= (match.lastInteractionDate || '');
+
+    // For follow-up: keep the latest (most future) date
+    let followUpDate = match.nextFollowUpDate;
+    let followUpAction = match.followUpAction;
+    if (contact.followUpDate && (!match.nextFollowUpDate || contact.followUpDate > match.nextFollowUpDate)) {
+      followUpDate = contact.followUpDate;
+      followUpAction = contact.followUpAction || match.followUpAction;
+    }
+
     const updatedRow = [
       match.company,
       existingContacts.join(', '),
-      contact.roleDiscussed || match.roleDiscussed,
-      contact.status || match.status,
+      (isNewer && contact.roleDiscussed) ? contact.roleDiscussed : match.roleDiscussed,
+      (isNewer && contact.status) ? contact.status : match.status,
       contact.channel || match.channel,
       match.firstContactDate || contact.firstContactDate || '',
-      contact.lastInteractionDate || match.lastInteractionDate,
-      contact.interactionSummary || match.lastInteractionSummary,
-      contact.followUpDate || match.nextFollowUpDate,
-      contact.followUpAction || match.followUpAction,
+      isNewer ? (contact.lastInteractionDate || match.lastInteractionDate) : match.lastInteractionDate,
+      isNewer ? (contact.interactionSummary || match.lastInteractionSummary) : match.lastInteractionSummary,
+      followUpDate,
+      followUpAction,
       match.notes ? `${match.notes}\n${contact.notes || ''}`.trim() : (contact.notes || '')
     ];
 
