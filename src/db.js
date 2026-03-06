@@ -99,20 +99,37 @@ function upsertCompany(db, data) {
     fields.push('contacts = ?');
     values.push(existingContacts.join(', '));
 
-    const updatable = {
-      role_discussed: data.roleDiscussed,
-      status: data.status,
-      channel: data.channel,
-      last_interaction_date: data.lastInteractionDate,
-      last_interaction_summary: data.interactionSummary,
-      next_follow_up_date: data.followUpDate,
-      follow_up_action: data.followUpAction,
-    };
+    // Only update interaction details if this message is newer than what's stored
+    const incomingDate = data.lastInteractionDate || '';
+    const storedDate = existing.last_interaction_date || '';
+    const isNewer = incomingDate >= storedDate;
 
-    for (const [field, val] of Object.entries(updatable)) {
-      if (val) {
-        fields.push(`${field} = ?`);
-        values.push(val);
+    if (isNewer) {
+      const updatable = {
+        role_discussed: data.roleDiscussed,
+        status: data.status,
+        channel: data.channel,
+        last_interaction_date: data.lastInteractionDate,
+        last_interaction_summary: data.interactionSummary,
+      };
+
+      for (const [field, val] of Object.entries(updatable)) {
+        if (val) {
+          fields.push(`${field} = ?`);
+          values.push(val);
+        }
+      }
+    }
+
+    // For follow-up: keep the LATEST (most future) follow-up date
+    // If incoming has a follow-up date, only overwrite if it's later than existing
+    if (data.followUpDate) {
+      const existingFollowUp = existing.next_follow_up_date || '';
+      if (!existingFollowUp || data.followUpDate > existingFollowUp) {
+        fields.push('next_follow_up_date = ?');
+        values.push(data.followUpDate);
+        fields.push('follow_up_action = ?');
+        values.push(data.followUpAction || existing.follow_up_action || '');
       }
     }
 
