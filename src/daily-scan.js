@@ -181,7 +181,10 @@ async function dailyScan() {
     const contactsList = (company.contacts || '').toLowerCase().split(',').map(s => s.trim());
 
     for (const a of attendeeNames) {
-      if (!a.isPast) continue;
+      // Past events and today's events both count - if there's a meeting today, the follow-up is handled
+      const eventIsRelevant = a.isPast || a.eventDate === today;
+      if (!eventIsRelevant) continue;
+
       const aName = (a.name || '').toLowerCase();
       const aEmail = (a.email || '').toLowerCase();
 
@@ -190,8 +193,9 @@ async function dailyScan() {
       ) || aName.includes(companyLower) || aEmail.includes(companyLower)
         || companyLower.split(' ').some(w => w.length > 3 && (aName.includes(w) || aEmail.includes(w)));
 
-      if (matches && company.next_follow_up_date && a.eventDate >= company.next_follow_up_date) {
-        console.log(`  Clearing follow-up for ${company.company}: meeting with ${a.name} on ${a.eventDate} satisfies due date ${company.next_follow_up_date}`);
+      if (matches && company.next_follow_up_date) {
+        const reason = a.isPast ? 'meeting happened' : 'meeting scheduled today';
+        console.log(`  Clearing follow-up for ${company.company}: ${reason} with ${a.name} on ${a.eventDate}`);
         db.prepare('UPDATE companies SET next_follow_up_date = NULL, follow_up_action = NULL, last_interaction_date = ?, last_interaction_summary = ?, updated_at = ? WHERE id = ?')
           .run(a.eventDate, `Meeting: ${a.eventSummary} with ${a.name}`, Date.now(), company.id);
         cleared++;
