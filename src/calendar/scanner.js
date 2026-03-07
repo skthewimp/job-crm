@@ -18,9 +18,31 @@ async function scanCalendar(daysAhead = 3) {
     orderBy: 'startTime'
   });
 
-  const events = res.data.items || [];
+  return (res.data.items || []).map(formatEvent);
+}
 
-  return events.map(event => ({
+// Scan past events to identify meetings that already happened
+async function scanPastEvents(daysBack = 7) {
+  const auth = getOAuth2Client();
+  const calendar = google.calendar({ version: 'v3', auth });
+
+  const now = new Date();
+  const past = new Date();
+  past.setDate(past.getDate() - daysBack);
+
+  const res = await calendar.events.list({
+    calendarId: 'primary',
+    timeMin: past.toISOString(),
+    timeMax: now.toISOString(),
+    singleEvents: true,
+    orderBy: 'startTime'
+  });
+
+  return (res.data.items || []).map(formatEvent);
+}
+
+function formatEvent(event) {
+  return {
     id: event.id,
     summary: event.summary || 'No title',
     description: event.description || '',
@@ -33,7 +55,7 @@ async function scanCalendar(daysAhead = 3) {
     })),
     location: event.location || '',
     htmlLink: event.htmlLink
-  }));
+  };
 }
 
-module.exports = { scanCalendar };
+module.exports = { scanCalendar, scanPastEvents };
