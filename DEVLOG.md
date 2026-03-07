@@ -2,6 +2,70 @@
 
 ---
 
+## 2026-03-07 — WhatsApp call tracking, calendar cross-referencing, company-level CRM
+
+### User prompts this session
+
+> "What model is this using right now? I want this to use either [Haiku] or Sonnet 4.6."
+>
+> "ok now rerun today's"
+>
+> "Right now, this is a bit useless. There's way too much information in the sheets and the email and all that. What I really want is, in the daily email, I want a list of to-do's for today [...] Then, in the sheet, in the Google Sheet, all I need is one roster company, not multiple roster company."
+>
+> "Okay, several problems with today's email. That connect for call at 8:30 and stuff is from 3 days ago, and we already had that call. You could have seen that call in my calendar."
+>
+> "And this also means that there will be some old emails where I would have said, 'Hey, I will ping you next week' [...] this Monday it should be popping up in my alerts"
+>
+> "The other thing is that if I have already followed up on something, you don't need to follow up. Let's say somebody says, 'Let's talk tomorrow.' Now, based on the data sources that you are using, you have absolutely no clue whether we have spoken or not."
+>
+> "There is another problem with the WhatsApp thing. Sometimes I would have said, 'Can you help me with something?' and you will interpret it as the other person has asked me"
+>
+> "Can you make it better by also cross-referencing any WhatsApp calls that have been made or received?"
+
+### What changed
+
+**Model upgrade to Sonnet 4.6** — Updated `src/llm/extractor.js` from `claude-sonnet-4-20250514` to `claude-sonnet-4-6`. The date-suffixed IDs (`claude-sonnet-4-6-20250514`) return 404; the correct ID has no suffix. SDK was already at v0.78.0.
+
+**Company-level CRM** — Rewrote from one-row-per-contact to one-row-per-company. Added `companies` table in `src/db.js` with `upsertCompany` (merges contacts into comma-separated list, "latest wins" for interaction details, keeps most-future follow-up date). `src/sheets/updater.js` now has 11 columns keyed by company name. Built `scripts/migrate-to-companies.js` for one-time migration from contacts table.
+
+**Simplified daily email** — `src/summary/emailer.js` now sends just a to-do list: overdue follow-ups, today's follow-ups, and upcoming calendar meetings. Subject: "Job Hunt: N to-dos for YYYY-MM-DD". Format: action-first (`**Send resume to [person]** - Company (contacts)`).
+
+**Date resolution fix** — Relative dates in messages ("let's talk tomorrow", "ping you Monday") were resolving against today instead of the message date. Fixed by passing `messageDate` through the entire pipeline to the extractor, which now resolves all relative dates against the message timestamp.
+
+**Follow-up date preservation** — Past follow-up dates are now kept as overdue reminders instead of being nulled out. The DB and Sheet upsert logic only overwrites follow-up dates if the new date is later than the existing one.
+
+**Actionable follow-ups only** — Rewrote extractor prompt to only create follow-ups for things [user] committed to doing (sending resumes, following up, etc.). Meeting proposals ("let's talk tomorrow") are excluded since we can't verify if they happened.
+
+**Message direction/sender attribution** — Added `direction` (incoming/outgoing) to the extraction pipeline. The extractor prompt now has a WHO IS WHO section that explicitly states who sent the message, fixing misattribution of outgoing messages.
+
+**Calendar cross-referencing** — Added `scanPastEvents(daysBack=7)` to `src/calendar/scanner.js`. `daily-scan.js` now cross-references calendar attendees (past events + today's events) against company contacts and automatically clears follow-ups when meetings have occurred or are scheduled today.
+
+**WhatsApp call tracking** — Added `calls` table in `src/db.js` with `insertCall` and `getCallsSince`. Updated `src/whatsapp/collector.js` to capture `call_log` message types and real-time `call` events. Updated `scripts/backfill-whatsapp.js` to capture historical call records (uses `chat.name` directly since `getContact()` fails for call_log messages). `daily-scan.js` now cross-references WhatsApp calls in addition to calendar events to clear follow-ups.
+
+### Key bugs fixed
+
+- **`getContact()` crashes on call_log messages** — Returns undefined `_serialized`. Fixed by using `chat.name` directly for call_log types.
+- **Backfill error handling** — One failed `getContact()` call would skip the entire chat. Wrapped individual message processing in try/catch so one bad message doesn't lose the rest.
+- **Calendar date comparison** — `eventDate >= followUpDate` meant a March 5 meeting couldn't clear a March 9 follow-up. Removed the date comparison entirely - any meeting with the company clears the follow-up.
+- **Today's events ignored** — `if (!a.isPast) continue` skipped today's upcoming meetings. Added `|| a.eventDate === today`.
+- **Duplicate company entries** — LLM extracted "kaigentic.com" and "kAIgentic" as separate companies. Manually deduped.
+
+### Files modified
+
+| File | Change |
+|------|--------|
+| `src/db.js` | Added `calls` table, `companies` table, `insertCall`, `getCallsSince`, `upsertCompany`, `getCompaniesDueForFollowUp` |
+| `src/llm/extractor.js` | Sonnet 4.6, messageDate param, direction awareness, follow-up rules |
+| `src/daily-scan.js` | Calendar + WhatsApp call cross-referencing, company-level upserts |
+| `src/sheets/updater.js` | Company-level (11 columns), contact merging |
+| `src/summary/emailer.js` | Simplified to-do list format |
+| `src/calendar/scanner.js` | Added `scanPastEvents()` |
+| `src/whatsapp/collector.js` | `call_log` + `call` event capture, group chat filtering |
+| `scripts/backfill-whatsapp.js` | Call capture, per-message error handling |
+| `scripts/migrate-to-companies.js` | One-time contacts→companies migration |
+
+---
+
 ## 2026-03-04 — WhatsApp backfill and group chat filtering
 
 ### User prompts this session

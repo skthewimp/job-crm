@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { initDb, getMessagesSince, upsertCompany, getCompaniesDueForFollowUp } = require('./db');
+const { initDb, getMessagesSince, getCallsSince, upsertCompany, getCompaniesDueForFollowUp } = require('./db');
 const { scanEmails } = require('./gmail/scanner');
 const { scanCalendar, scanPastEvents } = require('./calendar/scanner');
 const { classifyMessages } = require('./llm/classifier');
@@ -204,7 +204,32 @@ async function dailyScan() {
     }
   }
 
-  if (cleared > 0) console.log(`Cleared ${cleared} follow-ups satisfied by calendar events.`);
+  // Also check WhatsApp calls from last 7 days
+  const recentCalls = getCallsSince(db, Date.now() - SEVEN_DAYS_MS);
+  console.log(`  WhatsApp calls in last 7 days: ${recentCalls.length}`);
+
+  const remainingCompanies = db.prepare('SELECT * FROM companies WHERE next_follow_up_date IS NOT NULL').all();
+  for (const company of remainingCompanies) {
+    const contactsList = (company.contacts || '').toLowerCase().split(',').map(s => s.trim());
+
+    for (const call of recentCalls) {
+      const callName = (call.contact_name || '').toLowerCase();
+      const matches = contactsList.some(contact =>
+        contact && callName.includes(contact.split(' ')[0])
+      );
+
+      if (matches) {
+        const callDate = new Date(call.timestamp).toISOString().split('T')[0];
+        console.log(`  Clearing follow-up for ${company.company}: WhatsApp call with ${call.contact_name} on ${callDate}`);
+        db.prepare('UPDATE companies SET next_follow_up_date = NULL, follow_up_action = NULL, last_interaction_date = ?, last_interaction_summary = ?, updated_at = ? WHERE id = ?')
+          .run(callDate, `WhatsApp call with ${call.contact_name}`, Date.now(), company.id);
+        cleared++;
+        break;
+      }
+    }
+  }
+
+  if (cleared > 0) console.log(`Cleared ${cleared} total follow-ups satisfied by meetings/calls.`);
 
   // Step 7: Send daily summary using clean data
   console.log('Sending daily summary...');
