@@ -44,6 +44,18 @@ function initDb(dbPath = './data/crm.sqlite') {
       UNIQUE(name, company)
     );
 
+    CREATE TABLE IF NOT EXISTS calls (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id TEXT,
+      contact_name TEXT,
+      phone TEXT,
+      timestamp INTEGER,
+      direction TEXT,
+      created_at INTEGER DEFAULT (unixepoch() * 1000)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_calls_ts ON calls(timestamp);
+
     CREATE TABLE IF NOT EXISTS companies (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       company TEXT NOT NULL UNIQUE,
@@ -63,6 +75,20 @@ function initDb(dbPath = './data/crm.sqlite') {
   `);
 
   return db;
+}
+
+function insertCall(db, { chatId, contactName, phone, timestamp, direction }) {
+  const stmt = db.prepare(`
+    INSERT INTO calls (chat_id, contact_name, phone, timestamp, direction)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+  return stmt.run(chatId, contactName, phone, timestamp, direction);
+}
+
+function getCallsSince(db, sinceTimestamp) {
+  return db.prepare(`
+    SELECT * FROM calls WHERE timestamp >= ? ORDER BY timestamp ASC
+  `).all(sinceTimestamp);
 }
 
 function insertMessage(db, { chatId, contactName, phone, body, timestamp, direction, source }) {
@@ -261,6 +287,7 @@ function getContactsDueForFollowUp(db, date) {
 
 module.exports = {
   initDb, insertMessage, getMessagesSince,
+  insertCall, getCallsSince,
   upsertContact, getContactByNameAndCompany, getContacts, getContactsDueForFollowUp,
   upsertCompany, getCompaniesDueForFollowUp
 };

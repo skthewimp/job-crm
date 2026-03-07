@@ -1,7 +1,7 @@
 require('dotenv').config();
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
-const { initDb, insertMessage } = require('../db');
+const { initDb, insertMessage, insertCall } = require('../db');
 
 const db = initDb();
 
@@ -18,7 +18,7 @@ client.on('qr', (qr) => {
 });
 
 client.on('ready', () => {
-  console.log('WhatsApp client ready and listening for messages.');
+  console.log('WhatsApp client ready and listening for messages and calls.');
 });
 
 client.on('message_create', async (msg) => {
@@ -27,6 +27,20 @@ client.on('message_create', async (msg) => {
     if (chat.isGroup) return;
     const contact = await msg.getContact();
     const isFromMe = msg.fromMe;
+
+    // Capture call_log messages (appear as chat entries when a call happens)
+    if (msg.type === 'call_log') {
+      insertCall(db, {
+        chatId: chat.id._serialized,
+        contactName: chat.name || contact.pushname || contact.name || 'Unknown',
+        phone: contact.number || null,
+        timestamp: msg.timestamp * 1000,
+        direction: isFromMe ? 'outgoing' : 'incoming',
+      });
+      return;
+    }
+
+    if (!msg.body) return;
 
     insertMessage(db, {
       chatId: chat.id._serialized,
@@ -39,6 +53,22 @@ client.on('message_create', async (msg) => {
     });
   } catch (err) {
     console.error('Error storing message:', err.message);
+  }
+});
+
+// Capture incoming calls in real-time
+client.on('call', async (call) => {
+  try {
+    const contact = await client.getContactById(call.from);
+    insertCall(db, {
+      chatId: call.from,
+      contactName: contact.pushname || contact.name || 'Unknown',
+      phone: contact.number || null,
+      timestamp: Date.now(),
+      direction: call.fromMe ? 'outgoing' : 'incoming',
+    });
+  } catch (err) {
+    console.error('Error storing call:', err.message);
   }
 });
 

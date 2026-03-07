@@ -4,7 +4,7 @@
 
 require('dotenv').config();
 const { Client, LocalAuth } = require('whatsapp-web.js');
-const { initDb, insertMessage } = require('../src/db');
+const { initDb, insertMessage, insertCall } = require('../src/db');
 
 const THREE_WEEKS_MS = 21 * 24 * 60 * 60 * 1000;
 const cutoffTime = Date.now() - THREE_WEEKS_MS;
@@ -38,17 +38,35 @@ client.on('ready', async () => {
         for (const msg of messages) {
           const ts = msg.timestamp * 1000;
           if (ts < cutoffTime) continue;
+
+          // Capture call_log messages - use chat name directly (getContact fails for calls)
+          if (msg.type === 'call_log') {
+            try {
+              insertCall(db, {
+                chatId: chat.id._serialized,
+                contactName: chat.name || 'Unknown',
+                phone: null,
+                timestamp: ts,
+                direction: msg.fromMe ? 'outgoing' : 'incoming',
+              });
+              newMessages++;
+            } catch (e) { /* duplicate */ }
+            totalMessages++;
+            continue;
+          }
+
           if (!msg.body || msg.body.trim() === '') continue;
 
           totalMessages++;
 
-          const contact = await msg.getContact();
-          const isFromMe = msg.fromMe;
-
           try {
+            const contact = await msg.getContact();
+            const isFromMe = msg.fromMe;
+            const contactName = isFromMe ? chat.name : contact.pushname || contact.name || 'Unknown';
+
             insertMessage(db, {
               chatId: chat.id._serialized,
-              contactName: isFromMe ? chat.name : contact.pushname || contact.name || 'Unknown',
+              contactName,
               phone: contact.number || null,
               body: msg.body,
               timestamp: ts,
@@ -57,7 +75,7 @@ client.on('ready', async () => {
             });
             newMessages++;
           } catch (e) {
-            // Likely duplicate, skip
+            // getContact() failure or duplicate, skip this message
           }
         }
 
