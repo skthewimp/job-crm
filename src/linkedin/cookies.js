@@ -35,30 +35,37 @@ function decryptValue(encryptedValue, key) {
 }
 
 function getLinkedInCookies() {
+  if (!fs.existsSync(CHROME_COOKIES_PATH)) {
+    throw new Error(`Chrome cookies DB not found at ${CHROME_COOKIES_PATH}. Is Chrome installed?`);
+  }
+
   const tmpPath = path.join(os.tmpdir(), `chrome-cookies-${Date.now()}.sqlite`);
   fs.copyFileSync(CHROME_COOKIES_PATH, tmpPath);
 
-  const key = getChromeDecryptionKey();
-  const db = new Database(tmpPath, { readonly: true });
+  try {
+    const key = getChromeDecryptionKey();
+    const db = new Database(tmpPath, { readonly: true });
 
-  const rows = db.prepare(
-    `SELECT name, encrypted_value, host_key, path, expires_utc, is_secure, is_httponly
-     FROM cookies
-     WHERE host_key LIKE '%linkedin.com%'
-       AND name IN ('li_at', 'JSESSIONID', 'li_rm')`
-  ).all();
+    const rows = db.prepare(
+      `SELECT name, encrypted_value, host_key, path, is_secure, is_httponly
+       FROM cookies
+       WHERE host_key LIKE '%linkedin.com%'
+         AND name IN ('li_at', 'JSESSIONID', 'li_rm')`
+    ).all();
 
-  db.close();
-  fs.unlinkSync(tmpPath);
+    db.close();
 
-  return rows.map(row => ({
-    name: row.name,
-    value: decryptValue(row.encrypted_value, key),
-    domain: row.host_key.startsWith('.') ? row.host_key : `.${row.host_key}`,
-    path: row.path,
-    secure: Boolean(row.is_secure),
-    httpOnly: Boolean(row.is_httponly),
-  }));
+    return rows.map(row => ({
+      name: row.name,
+      value: decryptValue(row.encrypted_value, key),
+      domain: row.host_key.startsWith('.') ? row.host_key : `.${row.host_key}`,
+      path: row.path,
+      secure: Boolean(row.is_secure),
+      httpOnly: Boolean(row.is_httponly),
+    }));
+  } finally {
+    if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+  }
 }
 
 module.exports = { getLinkedInCookies };
