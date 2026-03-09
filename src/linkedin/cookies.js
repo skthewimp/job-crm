@@ -31,7 +31,8 @@ function decryptValue(encryptedValue, key) {
   decipher.setAutoPadding(true);
   let decrypted = decipher.update(data);
   decrypted = Buffer.concat([decrypted, decipher.final()]);
-  return decrypted.toString('utf8');
+  // Chrome prepends a 32-byte encrypted prefix; the actual cookie value starts at byte 32
+  return decrypted.slice(32).toString('utf8');
 }
 
 function getLinkedInCookies() {
@@ -58,7 +59,7 @@ function getLinkedInCookies() {
     return rows.map(row => ({
       name: row.name,
       value: decryptValue(row.encrypted_value, key),
-      domain: row.host_key.startsWith('.') ? row.host_key : `.${row.host_key}`,
+      domain: '.linkedin.com',
       path: row.path,
       secure: Boolean(row.is_secure),
       httpOnly: Boolean(row.is_httponly),
