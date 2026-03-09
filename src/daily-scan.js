@@ -1,7 +1,8 @@
 require('dotenv').config();
-const { initDb, getMessagesSince, getCallsSince, upsertCompany, getCompaniesDueForFollowUp } = require('./db');
+const { initDb, insertMessage, getMessagesSince, getCallsSince, upsertCompany, getCompaniesDueForFollowUp } = require('./db');
 const { scanEmails } = require('./gmail/scanner');
 const { scanCalendar, scanPastEvents } = require('./calendar/scanner');
+const { scanLinkedIn } = require('./linkedin/scanner');
 const { classifyMessages } = require('./llm/classifier');
 const { extractCommitments } = require('./llm/extractor');
 const { initSheet, upsertRow } = require('./sheets/updater');
@@ -71,7 +72,7 @@ async function dailyScan() {
 
   // Step 1: Scan ALL sources in parallel
   console.log('Scanning all sources...');
-  const [emailMessages, upcomingEvents, pastEvents, whatsappMessages] = await Promise.all([
+  const [emailMessages, upcomingEvents, pastEvents, whatsappMessages, linkedinMessages] = await Promise.all([
     scanEmails(db).catch(err => {
       console.error('Gmail scan failed:', err.message);
       return [];
@@ -84,10 +85,27 @@ async function dailyScan() {
       console.error('Past calendar scan failed:', err.message);
       return [];
     }),
-    Promise.resolve(getMessagesSince(db, 'whatsapp', Date.now() - SEVEN_DAYS_MS))
+    Promise.resolve(getMessagesSince(db, 'whatsapp', Date.now() - SEVEN_DAYS_MS)),
+    scanLinkedIn().catch(err => {
+      console.error('LinkedIn scan failed:', err.message);
+      return [];
+    })
   ]);
 
-  console.log(`Found: ${emailMessages.length} emails, ${pastEvents.length} past events, ${upcomingEvents.length} upcoming events, ${whatsappMessages.length} WhatsApp messages`);
+  console.log(`Found: ${emailMessages.length} emails, ${pastEvents.length} past events, ${upcomingEvents.length} upcoming events, ${whatsappMessages.length} WhatsApp messages, ${linkedinMessages.length} LinkedIn messages`);
+
+  // Store LinkedIn messages in DB
+  for (const msg of linkedinMessages) {
+    insertMessage(db, {
+      chatId: null,
+      contactName: msg.contactName,
+      phone: null,
+      body: msg.body?.substring(0, 5000),
+      timestamp: new Date(msg.messageDate).getTime(),
+      direction: msg.direction,
+      source: 'linkedin'
+    });
+  }
 
   // Step 2: Build calendar context for cross-referencing
   const { attendeeNames } = buildCalendarContext(pastEvents, upcomingEvents);
@@ -103,6 +121,13 @@ async function dailyScan() {
       source: 'WhatsApp',
       direction: m.direction,
       messageDate: tsToDate(m.timestamp)
+    })),
+    ...linkedinMessages.map(m => ({
+      body: m.body,
+      contactName: m.contactName,
+      source: 'LinkedIn',
+      direction: m.direction,
+      messageDate: m.messageDate.split('T')[0]
     }))
   ];
 
