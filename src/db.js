@@ -23,7 +23,6 @@ function initDb(dbPath = './data/crm.sqlite') {
     );
 
     CREATE INDEX IF NOT EXISTS idx_messages_source_ts ON messages(source, timestamp);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_dedup ON messages(source, timestamp, contact_name);
 
     CREATE TABLE IF NOT EXISTS contacts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,11 +81,17 @@ function initDb(dbPath = './data/crm.sqlite') {
     db.exec('ALTER TABLE messages ADD COLUMN classified INTEGER');
   }
 
-  // Migration: add dedup index if missing (ignore errors if it already exists)
+  // Migration: deduplicate existing messages and add unique index
   try {
     db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_dedup ON messages(source, timestamp, contact_name)');
   } catch (e) {
-    // Index may fail on existing duplicate data - that's ok, new inserts will still dedup
+    // Existing duplicates prevent index creation - clean them up
+    db.exec(`
+      DELETE FROM messages WHERE id NOT IN (
+        SELECT MIN(id) FROM messages GROUP BY source, timestamp, contact_name
+      )
+    `);
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_dedup ON messages(source, timestamp, contact_name)');
   }
 
   return db;
