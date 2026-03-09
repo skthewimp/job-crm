@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { initDb, insertMessage, getMessagesSince, getCallsSince, upsertCompany, getCompaniesDueForFollowUp } = require('./db');
+const { initDb, insertMessage, getMessagesSince, getCallsSince, getUnclassifiedMessages, markMessagesClassified, upsertCompany, getCompaniesDueForFollowUp } = require('./db');
 const { scanEmails } = require('./gmail/scanner');
 const { scanCalendar, scanPastEvents } = require('./calendar/scanner');
 const { scanLinkedIn } = require('./linkedin/scanner');
@@ -111,28 +111,28 @@ async function dailyScan() {
   const { attendeeNames } = buildCalendarContext(pastEvents, upcomingEvents);
   console.log(`Calendar context: ${attendeeNames.length} attendees across ${pastEvents.length + upcomingEvents.length} events`);
 
-  // Step 3: Classify messages
-  console.log('Classifying messages...');
-  const allMessages = [
-    ...emailMessages.map(m => ({ ...m, source: 'Email', messageDate: tsToDate(m.timestamp) })),
-    ...whatsappMessages.map(m => ({
-      body: m.body,
-      contactName: m.contact_name,
-      source: 'WhatsApp',
-      direction: m.direction,
-      messageDate: tsToDate(m.timestamp)
-    })),
-    ...linkedinMessages.map(m => ({
-      body: m.body,
-      contactName: m.contactName,
-      source: 'LinkedIn',
-      direction: m.direction,
-      messageDate: m.messageDate.split('T')[0]
-    }))
-  ];
+  // Step 3: Classify only NEW (unclassified) messages
+  const unclassified = getUnclassifiedMessages(db, Date.now() - SEVEN_DAYS_MS);
+  console.log(`Classifying ${unclassified.length} new messages (skipping already-classified)...`);
+
+  const sourceNameMap = { gmail: 'Email', whatsapp: 'WhatsApp', linkedin: 'LinkedIn' };
+  const allMessages = unclassified.map(m => ({
+    _dbId: m.id,
+    body: m.body,
+    contactName: m.contact_name,
+    source: sourceNameMap[m.source] || m.source,
+    direction: m.direction,
+    messageDate: tsToDate(m.timestamp)
+  }));
 
   const jobRelated = await classifyMessages(allMessages);
   console.log(`${jobRelated.length} job-related messages found.`);
+
+  // Mark all messages as classified
+  const jobRelatedIds = new Set(jobRelated.map(m => m._dbId));
+  const notJobRelatedIds = allMessages.filter(m => !jobRelatedIds.has(m._dbId)).map(m => m._dbId);
+  if (jobRelatedIds.size > 0) markMessagesClassified(db, [...jobRelatedIds], true);
+  if (notJobRelatedIds.length > 0) markMessagesClassified(db, notJobRelatedIds, false);
 
   // Step 4: Extract commitments
   console.log('Extracting commitments...');

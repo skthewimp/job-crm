@@ -18,10 +18,12 @@ function initDb(dbPath = './data/crm.sqlite') {
       timestamp INTEGER,
       direction TEXT,
       source TEXT,
+      classified INTEGER,
       created_at INTEGER DEFAULT (unixepoch() * 1000)
     );
 
     CREATE INDEX IF NOT EXISTS idx_messages_source_ts ON messages(source, timestamp);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_dedup ON messages(source, timestamp, contact_name);
 
     CREATE TABLE IF NOT EXISTS contacts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -74,6 +76,19 @@ function initDb(dbPath = './data/crm.sqlite') {
     );
   `);
 
+  // Migration: add classified column if missing
+  const cols = db.prepare("PRAGMA table_info(messages)").all();
+  if (!cols.some(c => c.name === 'classified')) {
+    db.exec('ALTER TABLE messages ADD COLUMN classified INTEGER');
+  }
+
+  // Migration: add dedup index if missing (ignore errors if it already exists)
+  try {
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_dedup ON messages(source, timestamp, contact_name)');
+  } catch (e) {
+    // Index may fail on existing duplicate data - that's ok, new inserts will still dedup
+  }
+
   return db;
 }
 
@@ -93,10 +108,29 @@ function getCallsSince(db, sinceTimestamp) {
 
 function insertMessage(db, { chatId, contactName, phone, body, timestamp, direction, source }) {
   const stmt = db.prepare(`
-    INSERT INTO messages (chat_id, contact_name, phone, body, timestamp, direction, source)
+    INSERT OR IGNORE INTO messages (chat_id, contact_name, phone, body, timestamp, direction, source)
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
   return stmt.run(chatId, contactName, phone, body, timestamp, direction, source);
+}
+
+function getUnclassifiedMessages(db, sinceTimestamp) {
+  return db.prepare(`
+    SELECT id, body, contact_name, direction, timestamp, source
+    FROM messages
+    WHERE timestamp >= ? AND classified IS NULL AND body IS NOT NULL
+    ORDER BY timestamp ASC
+  `).all(sinceTimestamp);
+}
+
+function markMessagesClassified(db, ids, isJobRelated) {
+  const stmt = db.prepare('UPDATE messages SET classified = ? WHERE id = ?');
+  const run = db.transaction((ids, value) => {
+    for (const id of ids) {
+      stmt.run(value, id);
+    }
+  });
+  run(ids, isJobRelated ? 1 : 0);
 }
 
 function getMessagesSince(db, source, sinceTimestamp) {
@@ -287,6 +321,7 @@ function getContactsDueForFollowUp(db, date) {
 
 module.exports = {
   initDb, insertMessage, getMessagesSince,
+  getUnclassifiedMessages, markMessagesClassified,
   insertCall, getCallsSince,
   upsertContact, getContactByNameAndCompany, getContacts, getContactsDueForFollowUp,
   upsertCompany, getCompaniesDueForFollowUp
