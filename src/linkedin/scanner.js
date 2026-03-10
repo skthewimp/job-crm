@@ -3,9 +3,27 @@ const puppeteer = require('puppeteer');
 const { getLinkedInCookies } = require('./cookies');
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
-const SCAN_TIMEOUT = 90000;
+const SCAN_TIMEOUT = 120000;
+const MAX_RETRIES = 3;
 
 async function scanLinkedIn() {
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const result = await scanLinkedInAttempt();
+      return result;
+    } catch (err) {
+      console.error(`  LinkedIn: attempt ${attempt}/${MAX_RETRIES} failed: ${err.message}`);
+      if (attempt < MAX_RETRIES) {
+        console.log('  LinkedIn: retrying in 5s...');
+        await new Promise(r => setTimeout(r, 5000));
+      }
+    }
+  }
+  console.error('  LinkedIn: all retries exhausted, skipping.');
+  return [];
+}
+
+async function scanLinkedInAttempt() {
   console.log('  LinkedIn: extracting cookies from Chrome...');
   let cookies;
   try {
@@ -87,7 +105,7 @@ async function scanLinkedIn() {
         console.log('  LinkedIn: loading messages...');
         await page.goto('https://www.linkedin.com/messaging/', {
           waitUntil: 'networkidle2',
-          timeout: 30000
+          timeout: 60000
         });
 
         const currentUrl = page.url();
