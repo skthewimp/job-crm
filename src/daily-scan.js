@@ -112,27 +112,62 @@ async function dailyScan() {
   console.log(`Calendar context: ${attendeeNames.length} attendees across ${pastEvents.length + upcomingEvents.length} events`);
 
   // Step 3: Classify only NEW (unclassified) messages
+  // Group by conversation (source + contact) to reduce API calls
   const unclassified = getUnclassifiedMessages(db, Date.now() - SEVEN_DAYS_MS);
-  console.log(`Classifying ${unclassified.length} new messages (skipping already-classified)...`);
+  console.log(`${unclassified.length} new messages to classify...`);
 
   const sourceNameMap = { gmail: 'Email', whatsapp: 'WhatsApp', linkedin: 'LinkedIn' };
-  const allMessages = unclassified.map(m => ({
-    _dbId: m.id,
-    body: m.body,
-    contactName: m.contact_name,
-    source: sourceNameMap[m.source] || m.source,
-    direction: m.direction,
-    messageDate: tsToDate(m.timestamp)
-  }));
 
-  const jobRelated = await classifyMessages(allMessages);
-  console.log(`${jobRelated.length} job-related messages found.`);
+  // Group messages by conversation (source + contact_name)
+  const convMap = new Map(); // key -> { messages: [], body: string }
+  for (const m of unclassified) {
+    const key = `${m.source}:${m.contact_name}`;
+    if (!convMap.has(key)) {
+      convMap.set(key, { messages: [], source: m.source, contactName: m.contact_name });
+    }
+    convMap.get(key).messages.push(m);
+  }
 
-  // Mark all messages as classified
-  const jobRelatedIds = new Set(jobRelated.map(m => m._dbId));
-  const notJobRelatedIds = allMessages.filter(m => !jobRelatedIds.has(m._dbId)).map(m => m._dbId);
-  if (jobRelatedIds.size > 0) markMessagesClassified(db, [...jobRelatedIds], true);
-  if (notJobRelatedIds.length > 0) markMessagesClassified(db, notJobRelatedIds, false);
+  // Build one classification entry per conversation
+  const convEntries = [];
+  for (const [key, conv] of convMap) {
+    const combinedBody = conv.messages
+      .map(m => `[${m.direction}] ${m.body}`)
+      .join('\n')
+      .substring(0, 2000);
+    convEntries.push({
+      body: combinedBody,
+      contactName: conv.contactName,
+      source: sourceNameMap[conv.source] || conv.source,
+      _key: key,
+    });
+  }
+
+  console.log(`  Grouped into ${convEntries.length} conversations (from ${unclassified.length} messages)...`);
+  const jobRelatedConvs = await classifyMessages(convEntries);
+  const jobRelatedKeys = new Set(jobRelatedConvs.map(c => c._key));
+  console.log(`${jobRelatedKeys.size} job-related conversations found.`);
+
+  // Expand back to individual messages and mark classified
+  const jobRelated = [];
+  for (const [key, conv] of convMap) {
+    const isJob = jobRelatedKeys.has(key);
+    const ids = conv.messages.map(m => m.id);
+    markMessagesClassified(db, ids, isJob);
+    if (isJob) {
+      for (const m of conv.messages) {
+        jobRelated.push({
+          _dbId: m.id,
+          body: m.body,
+          contactName: m.contact_name,
+          source: sourceNameMap[m.source] || m.source,
+          direction: m.direction,
+          messageDate: tsToDate(m.timestamp)
+        });
+      }
+    }
+  }
+  console.log(`${jobRelated.length} job-related messages to extract from.`);
 
   // Step 4: Extract commitments
   console.log('Extracting commitments...');
