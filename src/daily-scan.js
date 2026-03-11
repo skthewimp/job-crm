@@ -169,14 +169,33 @@ async function dailyScan() {
   }
   console.log(`${jobRelated.length} job-related messages to extract from.`);
 
-  // Step 4: Extract commitments
+  // Step 4: Extract commitments (grouped by conversation for better context)
   console.log('Extracting commitments...');
   const commitments = [];
+
+  // Group job-related messages by conversation (source + contact)
+  const extractGroups = new Map();
   for (const msg of jobRelated) {
-    const extracted = await extractCommitments(msg.body, msg.contactName, msg.messageDate, today, msg.direction);
+    const key = `${msg.source}:${msg.contactName}`;
+    if (!extractGroups.has(key)) {
+      extractGroups.set(key, { messages: [], source: msg.source, contactName: msg.contactName });
+    }
+    extractGroups.get(key).messages.push(msg);
+  }
+
+  for (const [, group] of extractGroups) {
+    // Build conversation text with direction markers, sorted by date
+    const sorted = group.messages.sort((a, b) => a.messageDate.localeCompare(b.messageDate));
+    const conversationText = sorted
+      .map(m => `[${m.direction}] ${m.body}`)
+      .join('\n\n')
+      .substring(0, 4000);
+    const latestDate = sorted[sorted.length - 1].messageDate;
+
+    const extracted = await extractCommitments(conversationText, group.contactName, latestDate, today);
     if (extracted) {
-      extracted.channel = msg.source;
-      extracted.messageDate = msg.messageDate;
+      extracted.channel = group.source;
+      extracted.messageDate = latestDate;
       commitments.push(extracted);
     }
   }
