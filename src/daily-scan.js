@@ -6,7 +6,8 @@ const { scanLinkedIn } = require('./linkedin/scanner');
 const { classifyMessages } = require('./llm/classifier');
 const { extractCommitments } = require('./llm/extractor');
 const { initSheet, upsertRow } = require('./sheets/updater');
-const { sendDailySummary } = require('./summary/emailer');
+const { sendDailySummary, getLastThreadId } = require('./summary/emailer');
+const { checkForFeedback, parseFeedback, applyFeedback } = require('./feedback/processor');
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -310,9 +311,25 @@ async function dailyScan() {
 
   if (cleared > 0) console.log(`Cleared ${cleared} total follow-ups satisfied by meetings/calls.`);
 
-  // Step 7: Send daily summary using clean data
+  // Step 7: Process feedback from replies to yesterday's summary
+  console.log('Checking for feedback...');
+  let feedbackApplied = [];
+  try {
+    const lastThread = getLastThreadId();
+    const replyText = await checkForFeedback(lastThread?.threadId);
+    if (replyText) {
+      const allCompanies = db.prepare('SELECT * FROM companies').all();
+      const actions = await parseFeedback(replyText, allCompanies);
+      console.log(`  Feedback: ${actions.length} action(s) parsed.`);
+      feedbackApplied = applyFeedback(db, actions);
+    }
+  } catch (err) {
+    console.error('Feedback processing failed:', err.message);
+  }
+
+  // Step 8: Send daily summary using clean data
   console.log('Sending daily summary...');
-  await sendDailySummary(db, upcomingEvents);
+  await sendDailySummary(db, upcomingEvents, feedbackApplied);
 
   db.close();
   console.log(`[${new Date().toISOString()}] Daily scan complete.`);

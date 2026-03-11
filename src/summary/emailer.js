@@ -1,8 +1,24 @@
 const { google } = require('googleapis');
 const { getOAuth2Client } = require('../google-auth');
 const { getCompaniesDueForFollowUp } = require('../db');
+const fs = require('fs');
+const path = require('path');
 
-async function sendDailySummary(db, calendarEvents) {
+const THREAD_ID_PATH = path.join(__dirname, '..', '..', 'data', 'last-summary-thread.json');
+
+function saveThreadId(threadId, date) {
+  fs.writeFileSync(THREAD_ID_PATH, JSON.stringify({ threadId, date }));
+}
+
+function getLastThreadId() {
+  try {
+    return JSON.parse(fs.readFileSync(THREAD_ID_PATH, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+async function sendDailySummary(db, calendarEvents, feedbackApplied) {
   const auth = getOAuth2Client();
   const gmail = google.gmail({ version: 'v1', auth });
   const selfEmail = process.env.GMAIL_SELF_EMAIL;
@@ -17,7 +33,7 @@ async function sendDailySummary(db, calendarEvents) {
 
   const totalItems = overdue.length + dueToday.length + jobEvents.length;
 
-  const html = buildEmailHtml(overdue, dueToday, jobEvents, today);
+  const html = buildEmailHtml(overdue, dueToday, jobEvents, today, feedbackApplied);
 
   const subject = totalItems > 0
     ? `Job Hunt: ${totalItems} to-do${totalItems > 1 ? 's' : ''} for ${today}`
@@ -37,19 +53,36 @@ async function sendDailySummary(db, calendarEvents) {
     .replace(/\//g, '_')
     .replace(/=+$/, '');
 
-  await gmail.users.messages.send({
+  const sent = await gmail.users.messages.send({
     userId: 'me',
     requestBody: { raw: encodedMessage }
   });
 
+  // Save thread ID so we can find replies tomorrow
+  if (sent.data && sent.data.threadId) {
+    saveThreadId(sent.data.threadId, today);
+  }
+
   console.log('Daily summary email sent.');
 }
 
-function buildEmailHtml(overdue, dueToday, calendarEvents, today) {
+function buildEmailHtml(overdue, dueToday, calendarEvents, today, feedbackApplied) {
   let html = '<div style="font-family:system-ui,sans-serif;max-width:600px;margin:0 auto">';
 
+  // Show feedback that was applied from yesterday's reply
+  if (feedbackApplied && feedbackApplied.length > 0) {
+    html += '<h3 style="color:#228B22;margin-bottom:8px">Your feedback applied</h3>';
+    html += '<ul style="padding-left:20px;margin-top:4px">';
+    for (const fb of feedbackApplied) {
+      html += `<li>${fb}</li>`;
+    }
+    html += '</ul>';
+  }
+
   if (overdue.length === 0 && dueToday.length === 0 && calendarEvents.length === 0) {
-    html += '<p>Nothing due today. No overdue items.</p></div>';
+    html += '<p>Nothing due today. No overdue items.</p>';
+    html += buildFooter();
+    html += '</div>';
     return html;
   }
 
@@ -81,8 +114,19 @@ function buildEmailHtml(overdue, dueToday, calendarEvents, today) {
     html += '</ul>';
   }
 
+  html += buildFooter();
   html += '</div>';
   return html;
+}
+
+function buildFooter() {
+  return '<p style="color:#666;font-size:12px;margin-top:24px;border-top:1px solid #eee;padding-top:12px">' +
+    'Reply to this email with feedback. Examples:<br>' +
+    '- "Drop Acme Corp - not interested"<br>' +
+    '- "Postpone HasGeek to next week"<br>' +
+    '- "Already spoke to Irina, clear the follow-up"<br>' +
+    '- "Change status of Microsoft to Interview Scheduled"' +
+    '</p>';
 }
 
 function formatTodos(items, showDate) {
@@ -98,4 +142,4 @@ function formatTodos(items, showDate) {
   return html;
 }
 
-module.exports = { sendDailySummary };
+module.exports = { sendDailySummary, getLastThreadId };
