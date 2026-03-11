@@ -238,7 +238,7 @@ function getCompaniesDueForFollowUp(db, date) {
     SELECT * FROM companies
     WHERE next_follow_up_date IS NOT NULL
       AND next_follow_up_date <= ?
-      AND status NOT IN ('Closed', 'Offer')
+      AND status NOT IN ('Closed', 'Offer', 'Not Interested')
     ORDER BY next_follow_up_date ASC
   `).all(date);
 }
@@ -319,7 +319,7 @@ function getContactsDueForFollowUp(db, date) {
     SELECT * FROM contacts
     WHERE next_follow_up_date IS NOT NULL
       AND next_follow_up_date <= ?
-      AND status NOT IN ('Closed', 'Offer')
+      AND status NOT IN ('Closed', 'Offer', 'Not Interested')
     ORDER BY next_follow_up_date ASC
   `).all(date);
 }
