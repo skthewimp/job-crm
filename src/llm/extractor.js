@@ -22,30 +22,24 @@ async function callWithRetry(fn, retries = MAX_RETRIES) {
   }
 }
 
-async function extractCommitments(messageText, contactName, messageDate, todayDate, direction) {
-  const senderLine = direction === 'outgoing'
-    ? `This message was SENT BY Karthik Shashidhar TO ${contactName}.`
-    : direction === 'incoming'
-      ? `This message was SENT BY ${contactName} TO Karthik Shashidhar.`
-      : `Message between Karthik Shashidhar and ${contactName} (direction unknown).`;
-
+async function extractCommitments(conversationText, contactName, messageDate, todayDate, directionHint) {
   const response = await callWithRetry(() => client.messages.create({
     model: 'claude-sonnet-4-6',
     max_tokens: 500,
     messages: [{
       role: 'user',
-      content: `Analyze this job-hunt related message and extract structured data.
+      content: `Analyze this job-hunt related conversation and extract structured data.
 
-${senderLine}
-This message was sent on: ${messageDate}
+This is a conversation between Karthik Shashidhar and ${contactName}.
+Each message is prefixed with [incoming] or [outgoing] to indicate direction.
+- [outgoing] = sent BY Karthik TO ${contactName}
+- [incoming] = sent BY ${contactName} TO Karthik
+The most recent message date is: ${messageDate}
 Today's date is: ${todayDate}
 
 WHO IS WHO:
 - Karthik Shashidhar (REDACTED_EMAIL) is the job seeker. He is the user of this CRM.
 - ${contactName} is the other person.
-- "I", "me", "my" in the message refers to whoever SENT the message (see above).
-- If the message is outgoing (sent by Karthik), then "I will send you my resume" means KARTHIK will send his resume.
-- If the message is incoming (sent by ${contactName}), then "Can you help me?" means ${contactName} is asking for help.
 
 DATE RULES:
 1. Resolve all relative dates ("tomorrow", "next week", "Monday") relative to the MESSAGE DATE (${messageDate}), NOT today.
@@ -61,14 +55,22 @@ Do NOT set follow-ups for:
 - Meetings/calls ("let's talk tomorrow") — can't verify if they happened
 - General pleasantries or discussion with no commitment
 
+COMPANY RULES (IMPORTANT):
+- Try hard to infer the company name from ANY clue in the conversation: company names, job postings, URLs, role titles, email domains, or references to "the role", "the position", "the team".
+- If ${contactName} is referring someone or acting as a middleman, the company is wherever the ROLE is, not where ${contactName} works.
+- If the conversation mentions a specific company or job link, use that.
+- If ${contactName} appears to work at or represent a company (e.g., "we're hiring", "our team"), infer that as the company.
+- As a last resort, if the conversation is clearly job-related but no company is identifiable, use "Unknown (via ${contactName})" rather than null. This ensures the interaction is tracked.
+
 Extract info about the OTHER person (${contactName}), not Karthik.
 
-Message: "${messageText}"
+Conversation:
+${conversationText}
 
-Return a JSON object with these fields (use null if not found):
+Return a JSON object with these fields (use null ONLY if truly not determinable, except company — see rules above):
 {
   "contactName": "full name of the OTHER person (not Karthik)",
-  "company": "their company",
+  "company": "their company or the company where the role is (NEVER null for job-related conversations — use 'Unknown (via ContactName)' as last resort)",
   "roleTitle": "their job title/role",
   "relationshipType": "Recruiter | Hiring Manager | Referral | Network contact",
   "roleDiscussed": "specific job role being discussed for Karthik",
