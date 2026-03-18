@@ -3,7 +3,7 @@ const puppeteer = require('puppeteer');
 const { getLinkedInCookies } = require('./cookies');
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
-const SCAN_TIMEOUT = 120000;
+const SCAN_TIMEOUT = 180000;
 const MAX_RETRIES = 3;
 
 async function scanLinkedIn() {
@@ -59,6 +59,8 @@ async function scanLinkedInAttempt() {
         const seen = new Set();
         const messages = [];
         const urnToName = new Map(); // URN -> display name
+        const urnToHeadline = new Map(); // URN -> headline/occupation
+        const urnToProfileUrl = new Map(); // URN -> profile URL
         const convParticipants = new Map(); // conversation URN -> [participant URNs]
         let selfUrn = null;
         const pending = [];
@@ -80,7 +82,7 @@ async function scanLinkedInAttempt() {
 
               // Extract participant names from conversations
               if (data.messengerConversationsBySyncToken) {
-                extractParticipants(data.messengerConversationsBySyncToken, urnToName, convParticipants);
+                extractParticipants(data.messengerConversationsBySyncToken, urnToName, urnToHeadline, urnToProfileUrl, convParticipants);
                 // Also extract messages embedded in conversations
                 for (const conv of (data.messengerConversationsBySyncToken.elements || [])) {
                   if (conv.messages && conv.messages.elements) {
@@ -137,15 +139,70 @@ async function scanLinkedInAttempt() {
           }
         }
 
-        // Remove internal fields and filter out messages still attributed to self
+        // Collect URNs of contacts we have messages from but no headline for
+        const contactUrnsNeedingProfile = new Set();
+        for (const msg of messages) {
+          const otherUrn = msg._senderUrn === selfUrn ? null : msg._senderUrn;
+          if (!otherUrn) {
+            // outgoing - find the other person's URN
+            if (msg._convUrn) {
+              const participants = convParticipants.get(msg._convUrn) || [];
+              const other = participants.find(u => u !== selfUrn);
+              if (other && !urnToHeadline.has(other) && urnToProfileUrl.has(other)) {
+                contactUrnsNeedingProfile.add(other);
+              }
+            }
+          } else if (!urnToHeadline.has(otherUrn) && urnToProfileUrl.has(otherUrn)) {
+            contactUrnsNeedingProfile.add(otherUrn);
+          }
+        }
+
+        // Visit profiles to scrape headline for contacts missing it
+        if (contactUrnsNeedingProfile.size > 0) {
+          console.log(`  LinkedIn: visiting ${contactUrnsNeedingProfile.size} profile(s) for company info...`);
+          for (const urn of contactUrnsNeedingProfile) {
+            const profileUrl = urnToProfileUrl.get(urn);
+            if (!profileUrl) continue;
+            try {
+              await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+              const headline = await page.evaluate(() => {
+                const el = document.querySelector('.text-body-medium.break-words')
+                  || document.querySelector('[data-generated-suggestion-target]')
+                  || document.querySelector('.pv-top-card--list .text-body-medium');
+                return el ? el.textContent.trim() : null;
+              });
+              if (headline) {
+                urnToHeadline.set(urn, headline);
+              }
+            } catch (e) {
+              // Profile visit failed, skip
+            }
+          }
+        }
+
+        // Attach headline to messages as linkedinHeadline
         const filtered = [];
         for (const msg of messages) {
+          // Find the OTHER person's URN for this message
+          let otherUrn = null;
+          if (msg._convUrn) {
+            const participants = convParticipants.get(msg._convUrn) || [];
+            otherUrn = participants.find(u => u !== selfUrn);
+          }
+          if (!otherUrn && msg._senderUrn !== selfUrn) {
+            otherUrn = msg._senderUrn;
+          }
+
+          if (otherUrn && urnToHeadline.has(otherUrn)) {
+            msg.linkedinHeadline = urnToHeadline.get(otherUrn);
+          }
+
           delete msg._senderUrn;
           delete msg._convUrn;
           filtered.push(msg);
         }
 
-        console.log(`  LinkedIn: captured ${filtered.length} messages from last 7 days (${urnToName.size} participants mapped)`);
+        console.log(`  LinkedIn: captured ${filtered.length} messages from last 7 days (${urnToName.size} participants, ${urnToHeadline.size} with headlines)`);
         return filtered;
       })(),
       new Promise((_, reject) =>
@@ -158,7 +215,7 @@ async function scanLinkedInAttempt() {
   }
 }
 
-function extractParticipants(conversationsData, urnToName, convParticipants) {
+function extractParticipants(conversationsData, urnToName, urnToHeadline, urnToProfileUrl, convParticipants) {
   for (const conv of (conversationsData.elements || [])) {
     const participantUrns = [];
     for (const p of (conv.conversationParticipants || [])) {
@@ -173,6 +230,22 @@ function extractParticipants(conversationsData, urnToName, convParticipants) {
         const name = [firstName, lastName].filter(Boolean).join(' ');
         if (name) {
           urnToName.set(urn, name);
+        }
+
+        // Extract headline/occupation - LinkedIn includes this in participant data
+        const headline = (member.headline && member.headline.text)
+          || (member.occupation)
+          || null;
+        if (headline) {
+          urnToHeadline.set(urn, headline);
+        }
+
+        // Extract profile URL if available
+        const profileUrl = member.publicIdentifier
+          ? `https://www.linkedin.com/in/${member.publicIdentifier}`
+          : null;
+        if (profileUrl) {
+          urnToProfileUrl.set(urn, profileUrl);
         }
       }
     }

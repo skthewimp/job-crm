@@ -95,8 +95,12 @@ async function dailyScan() {
 
   console.log(`Found: ${emailMessages.length} emails, ${pastEvents.length} past events, ${upcomingEvents.length} upcoming events, ${whatsappMessages.length} WhatsApp messages, ${linkedinMessages.length} LinkedIn messages`);
 
-  // Store LinkedIn messages in DB
+  // Store LinkedIn messages in DB (with headline as metadata prefix)
+  const linkedinHeadlines = new Map(); // contactName -> headline
   for (const msg of linkedinMessages) {
+    if (msg.linkedinHeadline) {
+      linkedinHeadlines.set(msg.contactName, msg.linkedinHeadline);
+    }
     insertMessage(db, {
       chatId: null,
       contactName: msg.contactName,
@@ -170,32 +174,51 @@ async function dailyScan() {
   }
   console.log(`${jobRelated.length} job-related messages to extract from.`);
 
-  // Step 4: Extract commitments (grouped by conversation for better context)
+  // Step 4: Extract commitments — grouped by PERSON across all sources
+  // This ensures cross-channel context (e.g., LinkedIn ask + email response are seen together)
   console.log('Extracting commitments...');
   const commitments = [];
 
-  // Group job-related messages by conversation (source + contact)
+  // Group job-related messages by normalized contact name (across all sources)
   const extractGroups = new Map();
   for (const msg of jobRelated) {
-    const key = `${msg.source}:${msg.contactName}`;
-    if (!extractGroups.has(key)) {
-      extractGroups.set(key, { messages: [], source: msg.source, contactName: msg.contactName });
+    const normName = msg.contactName.toLowerCase().trim();
+    if (!extractGroups.has(normName)) {
+      extractGroups.set(normName, {
+        messages: [],
+        displayName: msg.contactName,
+        sources: new Set()
+      });
     }
-    extractGroups.get(key).messages.push(msg);
+    const group = extractGroups.get(normName);
+    group.messages.push(msg);
+    group.sources.add(msg.source);
+    // Keep the longest/most complete version of the name as display name
+    if (msg.contactName.length > group.displayName.length) {
+      group.displayName = msg.contactName;
+    }
   }
 
+  console.log(`  Grouped ${jobRelated.length} messages into ${extractGroups.size} cross-source conversations`);
+
   for (const [, group] of extractGroups) {
-    // Build conversation text with direction markers, sorted by date
+    // Build conversation text with source AND direction markers, sorted by date
     const sorted = group.messages.sort((a, b) => a.messageDate.localeCompare(b.messageDate));
     const conversationText = sorted
-      .map(m => `[${m.direction}] ${m.body}`)
+      .map(m => `[${m.source} - ${m.direction}] ${m.body}`)
       .join('\n\n')
       .substring(0, 4000);
     const latestDate = sorted[sorted.length - 1].messageDate;
 
-    const extracted = await extractCommitments(conversationText, group.contactName, latestDate, today);
+    // Add LinkedIn headline context if available
+    const headline = linkedinHeadlines.get(group.displayName);
+    const headlineContext = headline ? `\nLinkedIn headline for ${group.displayName}: "${headline}"` : '';
+
+    const extracted = await extractCommitments(
+      conversationText, group.displayName, latestDate, today, headlineContext
+    );
     if (extracted) {
-      extracted.channel = group.source;
+      extracted.channel = [...group.sources].join(', ');
       extracted.messageDate = latestDate;
       commitments.push(extracted);
     }
