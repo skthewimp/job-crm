@@ -22,7 +22,7 @@ async function callWithRetry(fn, retries = MAX_RETRIES) {
   }
 }
 
-async function extractCommitments(conversationText, contactName, messageDate, todayDate, directionHint) {
+async function extractCommitments(conversationText, contactName, messageDate, todayDate, additionalContext) {
   const response = await callWithRetry(() => client.messages.create({
     model: 'claude-sonnet-4-6',
     max_tokens: 500,
@@ -31,15 +31,23 @@ async function extractCommitments(conversationText, contactName, messageDate, to
       content: `Analyze this job-hunt related conversation and extract structured data.
 
 This is a conversation between Karthik Shashidhar and ${contactName}.
-Each message is prefixed with [incoming] or [outgoing] to indicate direction.
-- [outgoing] = sent BY Karthik TO ${contactName}
-- [incoming] = sent BY ${contactName} TO Karthik
+Each message is prefixed with [Source - direction] to show the channel and direction:
+- [Email - outgoing] = Karthik emailed ${contactName}
+- [LinkedIn - incoming] = ${contactName} messaged Karthik on LinkedIn
+- [WhatsApp - outgoing] = Karthik messaged ${contactName} on WhatsApp
+Messages may span MULTIPLE channels (Email, LinkedIn, WhatsApp). Treat them as ONE continuous interaction.
 The most recent message date is: ${messageDate}
 Today's date is: ${todayDate}
+${additionalContext || ''}
 
 WHO IS WHO:
 - Karthik Shashidhar (karthik.shashidhar@gmail.com) is the job seeker. He is the user of this CRM.
 - ${contactName} is the other person.
+
+CROSS-CHANNEL AWARENESS (CRITICAL):
+- These messages come from multiple channels but are about the SAME relationship.
+- If a request was made on one channel (e.g., "send me your CV" on LinkedIn) and fulfilled on another (e.g., CV sent via email), the request is SATISFIED — do NOT create a follow-up for it.
+- Look at the FULL picture across all channels before deciding on follow-ups.
 
 DATE RULES:
 1. Resolve all relative dates ("tomorrow", "next week", "Monday") relative to the MESSAGE DATE (${messageDate}), NOT today.
@@ -52,11 +60,13 @@ Only set followUpDate/followUpAction for things KARTHIK needs to act on:
 - Karthik asked for something and hasn't received it → nudge follow-up
 - Other person promised to send something → nudge follow-up if enough time has passed
 Do NOT set follow-ups for:
+- Actions already completed on ANY channel (e.g., CV already sent by email)
 - Meetings/calls ("let's talk tomorrow") — can't verify if they happened
 - General pleasantries or discussion with no commitment
 
 COMPANY RULES (IMPORTANT):
 - Try hard to infer the company name from ANY clue in the conversation: company names, job postings, URLs, role titles, email domains, or references to "the role", "the position", "the team".
+- If a LinkedIn headline is provided above, use it to identify the company — the headline typically contains "Role at Company".
 - If ${contactName} is referring someone or acting as a middleman, the company is wherever the ROLE is, not where ${contactName} works.
 - If the conversation mentions a specific company or job link, use that.
 - If ${contactName} appears to work at or represent a company (e.g., "we're hiring", "our team"), infer that as the company.
@@ -74,8 +84,8 @@ Return a JSON object with these fields (use null ONLY if truly not determinable,
   "roleTitle": "their job title/role",
   "relationshipType": "Recruiter | Hiring Manager | Referral | Network contact",
   "roleDiscussed": "specific job role being discussed for Karthik",
-  "interactionSummary": "one-line summary of this exchange",
-  "followUpDate": "YYYY-MM-DD — only if Karthik has a concrete action to take, otherwise null",
+  "interactionSummary": "one-line summary of this exchange across all channels",
+  "followUpDate": "YYYY-MM-DD — only if Karthik has an UNSATISFIED action to take, otherwise null",
   "followUpAction": "what Karthik needs to do (verb phrase), or null",
   "status": "Active | Waiting | Interview Scheduled"
 }
