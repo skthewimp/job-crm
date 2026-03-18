@@ -21,7 +21,7 @@
 **Step 1: Initialize the project**
 
 ```bash
-cd "/Users/Karthik/Documents/work/data work/job-crm"
+cd "/Users/Karthik/Documents/work/vibes/job-crm"
 npm init -y
 ```
 
@@ -1369,10 +1369,10 @@ git commit -m "feat: add daily scanner orchestrator"
     <key>ProgramArguments</key>
     <array>
         <string>/usr/local/bin/node</string>
-        <string>/Users/Karthik/Documents/work/data work/job-crm/src/whatsapp/collector.js</string>
+        <string>/Users/Karthik/Documents/work/vibes/job-crm/src/whatsapp/collector.js</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>/Users/Karthik/Documents/work/data work/job-crm</string>
+    <string>/Users/Karthik/Documents/work/vibes/job-crm</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
@@ -1383,9 +1383,9 @@ git commit -m "feat: add daily scanner orchestrator"
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/Users/Karthik/Documents/work/data work/job-crm/data/whatsapp.log</string>
+    <string>/Users/Karthik/Documents/work/vibes/job-crm/data/whatsapp.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/Karthik/Documents/work/data work/job-crm/data/whatsapp-error.log</string>
+    <string>/Users/Karthik/Documents/work/vibes/job-crm/data/whatsapp-error.log</string>
 </dict>
 </plist>
 ```
@@ -1403,10 +1403,10 @@ git commit -m "feat: add daily scanner orchestrator"
     <key>ProgramArguments</key>
     <array>
         <string>/usr/local/bin/node</string>
-        <string>/Users/Karthik/Documents/work/data work/job-crm/src/daily-scan.js</string>
+        <string>/Users/Karthik/Documents/work/vibes/job-crm/src/daily-scan.js</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>/Users/Karthik/Documents/work/data work/job-crm</string>
+    <string>/Users/Karthik/Documents/work/vibes/job-crm</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
@@ -1420,9 +1420,9 @@ git commit -m "feat: add daily scanner orchestrator"
         <integer>0</integer>
     </dict>
     <key>StandardOutPath</key>
-    <string>/Users/Karthik/Documents/work/data work/job-crm/data/daily-scan.log</string>
+    <string>/Users/Karthik/Documents/work/vibes/job-crm/data/daily-scan.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/Karthik/Documents/work/data work/job-crm/data/daily-scan-error.log</string>
+    <string>/Users/Karthik/Documents/work/vibes/job-crm/data/daily-scan-error.log</string>
 </dict>
 </plist>
 ```
@@ -1444,7 +1444,7 @@ echo "Node path: $NODE_PATH"
 # Update plists with correct node path
 for plist in "$PROJECT_DIR"/launchd/*.plist; do
     sed -i '' "s|/usr/local/bin/node|$NODE_PATH|g" "$plist"
-    sed -i '' "s|/Users/Karthik/Documents/work/data work/job-crm|$PROJECT_DIR|g" "$plist"
+    sed -i '' "s|/Users/Karthik/Documents/work/vibes/job-crm|$PROJECT_DIR|g" "$plist"
 done
 
 # Copy to LaunchAgents
