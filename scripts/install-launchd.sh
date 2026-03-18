@@ -9,7 +9,7 @@ echo "Node path: $NODE_PATH"
 
 for plist in "$PROJECT_DIR"/launchd/*.plist; do
     sed -i '' "s|/usr/local/bin/node|$NODE_PATH|g" "$plist"
-    sed -i '' "s|/Users/Karthik/Documents/work/data work/job-crm|$PROJECT_DIR|g" "$plist"
+    sed -i '' "s|/Users/Karthik/Documents/work/vibes/job-crm|$PROJECT_DIR|g" "$plist"
 done
 
 cp "$PROJECT_DIR/launchd/com.jobcrm.whatsapp.plist" ~/Library/LaunchAgents/
