@@ -41,7 +41,7 @@ Today's date is: ${todayDate}
 ${additionalContext || ''}
 
 WHO IS WHO:
-- Karthik Shashidhar (REDACTED_EMAIL) is the job seeker. He is the user of this CRM.
+- Karthik Shashidhar (${process.env.GMAIL_SELF_EMAIL}) is the job seeker. He is the user of this CRM.
 - ${contactName} is the other person.
 
 CROSS-CHANNEL AWARENESS (CRITICAL):
