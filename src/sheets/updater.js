@@ -1,6 +1,7 @@
 // src/sheets/updater.js
 const { google } = require('googleapis');
 const { getOAuth2Client } = require('../google-auth');
+const { initDb, isCompanyBlocked } = require('../db');
 
 const SHEET_TAB = process.env.SHEET_TAB || 'CRM';
 
@@ -82,6 +83,14 @@ async function upsertRow(sheetId, contact) {
 
   const company = (contact.company || '').trim();
   if (!company) return { action: 'skipped', reason: 'no company' };
+
+  // Check blocklist — don't add removed companies back to the sheet
+  const db = initDb();
+  try {
+    if (isCompanyBlocked(db, company)) return { action: 'skipped', reason: 'blocked' };
+  } finally {
+    db.close();
+  }
 
   const match = existing.find(r =>
     r.company.toLowerCase() === company.toLowerCase()

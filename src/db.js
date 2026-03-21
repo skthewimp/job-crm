@@ -73,6 +73,12 @@ function initDb(dbPath = './data/crm.sqlite') {
       created_at INTEGER DEFAULT (unixepoch() * 1000),
       updated_at INTEGER DEFAULT (unixepoch() * 1000)
     );
+
+    CREATE TABLE IF NOT EXISTS blocked_companies (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      company TEXT NOT NULL UNIQUE,
+      created_at INTEGER DEFAULT (unixepoch() * 1000)
+    );
   `);
 
   // Migration: add classified column if missing
@@ -144,9 +150,15 @@ function getMessagesSince(db, source, sinceTimestamp) {
   `).all(source, sinceTimestamp);
 }
 
+function isCompanyBlocked(db, company) {
+  return !!db.prepare('SELECT 1 FROM blocked_companies WHERE company = ?').get(company.trim().toLowerCase());
+}
+
 function upsertCompany(db, data) {
   const company = (data.company || '').trim();
   if (!company) return null;
+
+  if (isCompanyBlocked(db, company)) return null;
 
   const existing = db.prepare('SELECT * FROM companies WHERE company = ?').get(company);
 
@@ -329,5 +341,5 @@ module.exports = {
   getUnclassifiedMessages, markMessagesClassified,
   insertCall, getCallsSince,
   upsertContact, getContactByNameAndCompany, getContacts, getContactsDueForFollowUp,
-  upsertCompany, getCompaniesDueForFollowUp
+  upsertCompany, getCompaniesDueForFollowUp, isCompanyBlocked
 };

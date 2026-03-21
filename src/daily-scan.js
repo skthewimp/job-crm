@@ -117,11 +117,20 @@ async function dailyScan() {
   console.log(`Calendar context: ${attendeeNames.length} attendees across ${pastEvents.length + upcomingEvents.length} events`);
 
   // Step 3: Classify only NEW (unclassified) messages
-  // Group by conversation (source + contact) to reduce API calls
+  // If a contact already has job-related messages (across any source), auto-classify
+  // their new messages as job-related — once a thread is job-related, it stays that way.
   const unclassified = getUnclassifiedMessages(db, Date.now() - SEVEN_DAYS_MS);
   console.log(`${unclassified.length} new messages to classify...`);
 
   const sourceNameMap = { gmail: 'Email', whatsapp: 'WhatsApp', linkedin: 'LinkedIn' };
+
+  // Build set of contact names (normalized) that already have job-related messages
+  const knownJobContacts = new Set(
+    db.prepare(`
+      SELECT DISTINCT LOWER(TRIM(contact_name)) FROM messages
+      WHERE classified = 1 AND contact_name IS NOT NULL
+    `).all().map(r => Object.values(r)[0])
+  );
 
   // Group messages by conversation (source + contact_name)
   const convMap = new Map(); // key -> { messages: [], body: string }
@@ -133,24 +142,33 @@ async function dailyScan() {
     convMap.get(key).messages.push(m);
   }
 
-  // Build one classification entry per conversation
+  // Split: auto-classify known contacts, send the rest to the LLM
+  const autoClassifiedKeys = new Set();
   const convEntries = [];
   for (const [key, conv] of convMap) {
-    const combinedBody = conv.messages
-      .map(m => `[${m.direction}] ${m.body}`)
-      .join('\n')
-      .substring(0, 2000);
-    convEntries.push({
-      body: combinedBody,
-      contactName: conv.contactName,
-      source: sourceNameMap[conv.source] || conv.source,
-      _key: key,
-    });
+    const normName = conv.contactName.toLowerCase().trim();
+    if (knownJobContacts.has(normName)) {
+      autoClassifiedKeys.add(key);
+    } else {
+      const combinedBody = conv.messages
+        .map(m => `[${m.direction}] ${m.body}`)
+        .join('\n')
+        .substring(0, 2000);
+      convEntries.push({
+        body: combinedBody,
+        contactName: conv.contactName,
+        source: sourceNameMap[conv.source] || conv.source,
+        _key: key,
+      });
+    }
   }
 
-  console.log(`  Grouped into ${convEntries.length} conversations (from ${unclassified.length} messages)...`);
-  const jobRelatedConvs = await classifyMessages(convEntries);
-  const jobRelatedKeys = new Set(jobRelatedConvs.map(c => c._key));
+  console.log(`  ${autoClassifiedKeys.size} conversations auto-classified (known job contacts), ${convEntries.length} need LLM classification`);
+  const jobRelatedConvs = convEntries.length > 0 ? await classifyMessages(convEntries) : [];
+  const jobRelatedKeys = new Set([
+    ...autoClassifiedKeys,
+    ...jobRelatedConvs.map(c => c._key)
+  ]);
   console.log(`${jobRelatedKeys.size} job-related conversations found.`);
 
   // Expand back to individual messages and mark classified
@@ -311,15 +329,57 @@ async function dailyScan() {
   const recentCalls = getCallsSince(db, Date.now() - SEVEN_DAYS_MS);
   console.log(`  WhatsApp calls in last 7 days: ${recentCalls.length}`);
 
+  // Build phone-to-company mapping: find phone numbers mentioned in message
+  // bodies from known company contacts (e.g., someone shares their number on LinkedIn)
+  const phoneToCompany = new Map(); // normalized phone -> { companyName, contactName }
+  const allCompaniesForPhones = db.prepare('SELECT * FROM companies').all();
+  for (const company of allCompaniesForPhones) {
+    const contactsList = (company.contacts || '').split(',').map(s => s.trim()).filter(Boolean);
+    for (const contactName of contactsList) {
+      // Find messages from this contact that contain phone numbers
+      const msgs = db.prepare(
+        "SELECT body, phone FROM messages WHERE contact_name = ? AND classified = 1"
+      ).all(contactName);
+      for (const msg of msgs) {
+        // Extract phone numbers from message body (Indian +91 and international formats)
+        const phoneMatches = (msg.body || '').match(/\+?\d[\d\s\-()]{7,}\d/g) || [];
+        for (const ph of phoneMatches) {
+          const normalized = ph.replace(/[\s\-()+ ]/g, '');
+          if (normalized.length >= 10) {
+            phoneToCompany.set(normalized.slice(-10), { companyName: company.company, contactName, companyId: company.id });
+          }
+        }
+        // Also index the phone field from WhatsApp messages
+        if (msg.phone) {
+          const norm = msg.phone.replace(/[\s\-()+ ]/g, '');
+          if (norm.length >= 10) {
+            phoneToCompany.set(norm.slice(-10), { companyName: company.company, contactName, companyId: company.id });
+          }
+        }
+      }
+    }
+  }
+  console.log(`  Phone-to-company index: ${phoneToCompany.size} numbers mapped`);
+
   const remainingCompanies = db.prepare('SELECT * FROM companies WHERE next_follow_up_date IS NOT NULL').all();
   for (const company of remainingCompanies) {
     const contactsList = (company.contacts || '').toLowerCase().split(',').map(s => s.trim());
 
     for (const call of recentCalls) {
       const callName = (call.contact_name || '').toLowerCase();
-      const matches = contactsList.some(contact =>
+      // Match by contact name
+      let matches = contactsList.some(contact =>
         contact && callName.includes(contact.split(' ')[0])
       );
+
+      // If no name match, try matching by phone number
+      if (!matches && call.phone) {
+        const callPhoneNorm = call.phone.replace(/[\s\-()+ ]/g, '').slice(-10);
+        const phoneMatch = phoneToCompany.get(callPhoneNorm);
+        if (phoneMatch && phoneMatch.companyId === company.id) {
+          matches = true;
+        }
+      }
 
       if (matches) {
         const callDate = new Date(call.timestamp).toISOString().split('T')[0];
