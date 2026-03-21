@@ -18,6 +18,7 @@ function initDb(dbPath = './data/crm.sqlite') {
       timestamp INTEGER,
       direction TEXT,
       source TEXT,
+      classified INTEGER,
       created_at INTEGER DEFAULT (unixepoch() * 1000)
     );
 
@@ -72,7 +73,32 @@ function initDb(dbPath = './data/crm.sqlite') {
       created_at INTEGER DEFAULT (unixepoch() * 1000),
       updated_at INTEGER DEFAULT (unixepoch() * 1000)
     );
+
+    CREATE TABLE IF NOT EXISTS blocked_companies (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      company TEXT NOT NULL UNIQUE,
+      created_at INTEGER DEFAULT (unixepoch() * 1000)
+    );
   `);
+
+  // Migration: add classified column if missing
+  const cols = db.prepare("PRAGMA table_info(messages)").all();
+  if (!cols.some(c => c.name === 'classified')) {
+    db.exec('ALTER TABLE messages ADD COLUMN classified INTEGER');
+  }
+
+  // Migration: deduplicate existing messages and add unique index
+  try {
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_dedup ON messages(source, timestamp, contact_name)');
+  } catch (e) {
+    // Existing duplicates prevent index creation - clean them up
+    db.exec(`
+      DELETE FROM messages WHERE id NOT IN (
+        SELECT MIN(id) FROM messages GROUP BY source, timestamp, contact_name
+      )
+    `);
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_dedup ON messages(source, timestamp, contact_name)');
+  }
 
   return db;
 }
@@ -93,10 +119,29 @@ function getCallsSince(db, sinceTimestamp) {
 
 function insertMessage(db, { chatId, contactName, phone, body, timestamp, direction, source }) {
   const stmt = db.prepare(`
-    INSERT INTO messages (chat_id, contact_name, phone, body, timestamp, direction, source)
+    INSERT OR IGNORE INTO messages (chat_id, contact_name, phone, body, timestamp, direction, source)
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
   return stmt.run(chatId, contactName, phone, body, timestamp, direction, source);
+}
+
+function getUnclassifiedMessages(db, sinceTimestamp) {
+  return db.prepare(`
+    SELECT id, body, contact_name, direction, timestamp, source
+    FROM messages
+    WHERE timestamp >= ? AND classified IS NULL AND body IS NOT NULL
+    ORDER BY timestamp ASC
+  `).all(sinceTimestamp);
+}
+
+function markMessagesClassified(db, ids, isJobRelated) {
+  const stmt = db.prepare('UPDATE messages SET classified = ? WHERE id = ?');
+  const run = db.transaction((ids, value) => {
+    for (const id of ids) {
+      stmt.run(value, id);
+    }
+  });
+  run(ids, isJobRelated ? 1 : 0);
 }
 
 function getMessagesSince(db, source, sinceTimestamp) {
@@ -105,9 +150,15 @@ function getMessagesSince(db, source, sinceTimestamp) {
   `).all(source, sinceTimestamp);
 }
 
+function isCompanyBlocked(db, company) {
+  return !!db.prepare('SELECT 1 FROM blocked_companies WHERE company = ?').get(company.trim().toLowerCase());
+}
+
 function upsertCompany(db, data) {
   const company = (data.company || '').trim();
   if (!company) return null;
+
+  if (isCompanyBlocked(db, company)) return null;
 
   const existing = db.prepare('SELECT * FROM companies WHERE company = ?').get(company);
 
@@ -199,7 +250,7 @@ function getCompaniesDueForFollowUp(db, date) {
     SELECT * FROM companies
     WHERE next_follow_up_date IS NOT NULL
       AND next_follow_up_date <= ?
-      AND status NOT IN ('Closed', 'Offer')
+      AND status NOT IN ('Closed', 'Offer', 'Not Interested')
     ORDER BY next_follow_up_date ASC
   `).all(date);
 }
@@ -280,14 +331,15 @@ function getContactsDueForFollowUp(db, date) {
     SELECT * FROM contacts
     WHERE next_follow_up_date IS NOT NULL
       AND next_follow_up_date <= ?
-      AND status NOT IN ('Closed', 'Offer')
+      AND status NOT IN ('Closed', 'Offer', 'Not Interested')
     ORDER BY next_follow_up_date ASC
   `).all(date);
 }
 
 module.exports = {
   initDb, insertMessage, getMessagesSince,
+  getUnclassifiedMessages, markMessagesClassified,
   insertCall, getCallsSince,
   upsertContact, getContactByNameAndCompany, getContacts, getContactsDueForFollowUp,
-  upsertCompany, getCompaniesDueForFollowUp
+  upsertCompany, getCompaniesDueForFollowUp, isCompanyBlocked
 };

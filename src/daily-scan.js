@@ -1,11 +1,13 @@
 require('dotenv').config();
-const { initDb, getMessagesSince, getCallsSince, upsertCompany, getCompaniesDueForFollowUp } = require('./db');
+const { initDb, insertMessage, getMessagesSince, getCallsSince, getUnclassifiedMessages, markMessagesClassified, upsertCompany, getCompaniesDueForFollowUp } = require('./db');
 const { scanEmails } = require('./gmail/scanner');
 const { scanCalendar, scanPastEvents } = require('./calendar/scanner');
+const { scanLinkedIn } = require('./linkedin/scanner');
 const { classifyMessages } = require('./llm/classifier');
 const { extractCommitments } = require('./llm/extractor');
 const { initSheet, upsertRow } = require('./sheets/updater');
-const { sendDailySummary } = require('./summary/emailer');
+const { sendDailySummary, getLastThreadId } = require('./summary/emailer');
+const { checkForFeedback, parseFeedback, applyFeedback } = require('./feedback/processor');
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -71,7 +73,7 @@ async function dailyScan() {
 
   // Step 1: Scan ALL sources in parallel
   console.log('Scanning all sources...');
-  const [emailMessages, upcomingEvents, pastEvents, whatsappMessages] = await Promise.all([
+  const [emailMessages, upcomingEvents, pastEvents, whatsappMessages, linkedinMessages] = await Promise.all([
     scanEmails(db).catch(err => {
       console.error('Gmail scan failed:', err.message);
       return [];
@@ -84,39 +86,158 @@ async function dailyScan() {
       console.error('Past calendar scan failed:', err.message);
       return [];
     }),
-    Promise.resolve(getMessagesSince(db, 'whatsapp', Date.now() - SEVEN_DAYS_MS))
+    Promise.resolve(getMessagesSince(db, 'whatsapp', Date.now() - SEVEN_DAYS_MS)),
+    scanLinkedIn().catch(err => {
+      console.error('LinkedIn scan failed:', err.message);
+      return [];
+    })
   ]);
 
-  console.log(`Found: ${emailMessages.length} emails, ${pastEvents.length} past events, ${upcomingEvents.length} upcoming events, ${whatsappMessages.length} WhatsApp messages`);
+  console.log(`Found: ${emailMessages.length} emails, ${pastEvents.length} past events, ${upcomingEvents.length} upcoming events, ${whatsappMessages.length} WhatsApp messages, ${linkedinMessages.length} LinkedIn messages`);
+
+  // Store LinkedIn messages in DB (with headline as metadata prefix)
+  const linkedinHeadlines = new Map(); // contactName -> headline
+  for (const msg of linkedinMessages) {
+    if (msg.linkedinHeadline) {
+      linkedinHeadlines.set(msg.contactName, msg.linkedinHeadline);
+    }
+    insertMessage(db, {
+      chatId: null,
+      contactName: msg.contactName,
+      phone: null,
+      body: msg.body?.substring(0, 5000),
+      timestamp: new Date(msg.messageDate).getTime(),
+      direction: msg.direction,
+      source: 'linkedin'
+    });
+  }
 
   // Step 2: Build calendar context for cross-referencing
   const { attendeeNames } = buildCalendarContext(pastEvents, upcomingEvents);
   console.log(`Calendar context: ${attendeeNames.length} attendees across ${pastEvents.length + upcomingEvents.length} events`);
 
-  // Step 3: Classify messages
-  console.log('Classifying messages...');
-  const allMessages = [
-    ...emailMessages.map(m => ({ ...m, source: 'Email', messageDate: tsToDate(m.timestamp) })),
-    ...whatsappMessages.map(m => ({
-      body: m.body,
-      contactName: m.contact_name,
-      source: 'WhatsApp',
-      direction: m.direction,
-      messageDate: tsToDate(m.timestamp)
-    }))
-  ];
+  // Step 3: Classify only NEW (unclassified) messages
+  // If a contact already has job-related messages (across any source), auto-classify
+  // their new messages as job-related — once a thread is job-related, it stays that way.
+  const unclassified = getUnclassifiedMessages(db, Date.now() - SEVEN_DAYS_MS);
+  console.log(`${unclassified.length} new messages to classify...`);
 
-  const jobRelated = await classifyMessages(allMessages);
-  console.log(`${jobRelated.length} job-related messages found.`);
+  const sourceNameMap = { gmail: 'Email', whatsapp: 'WhatsApp', linkedin: 'LinkedIn' };
 
-  // Step 4: Extract commitments
+  // Build set of contact names (normalized) that already have job-related messages
+  const knownJobContacts = new Set(
+    db.prepare(`
+      SELECT DISTINCT LOWER(TRIM(contact_name)) FROM messages
+      WHERE classified = 1 AND contact_name IS NOT NULL
+    `).all().map(r => Object.values(r)[0])
+  );
+
+  // Group messages by conversation (source + contact_name)
+  const convMap = new Map(); // key -> { messages: [], body: string }
+  for (const m of unclassified) {
+    const key = `${m.source}:${m.contact_name}`;
+    if (!convMap.has(key)) {
+      convMap.set(key, { messages: [], source: m.source, contactName: m.contact_name });
+    }
+    convMap.get(key).messages.push(m);
+  }
+
+  // Split: auto-classify known contacts, send the rest to the LLM
+  const autoClassifiedKeys = new Set();
+  const convEntries = [];
+  for (const [key, conv] of convMap) {
+    const normName = conv.contactName.toLowerCase().trim();
+    if (knownJobContacts.has(normName)) {
+      autoClassifiedKeys.add(key);
+    } else {
+      const combinedBody = conv.messages
+        .map(m => `[${m.direction}] ${m.body}`)
+        .join('\n')
+        .substring(0, 2000);
+      convEntries.push({
+        body: combinedBody,
+        contactName: conv.contactName,
+        source: sourceNameMap[conv.source] || conv.source,
+        _key: key,
+      });
+    }
+  }
+
+  console.log(`  ${autoClassifiedKeys.size} conversations auto-classified (known job contacts), ${convEntries.length} need LLM classification`);
+  const jobRelatedConvs = convEntries.length > 0 ? await classifyMessages(convEntries) : [];
+  const jobRelatedKeys = new Set([
+    ...autoClassifiedKeys,
+    ...jobRelatedConvs.map(c => c._key)
+  ]);
+  console.log(`${jobRelatedKeys.size} job-related conversations found.`);
+
+  // Expand back to individual messages and mark classified
+  const jobRelated = [];
+  for (const [key, conv] of convMap) {
+    const isJob = jobRelatedKeys.has(key);
+    const ids = conv.messages.map(m => m.id);
+    markMessagesClassified(db, ids, isJob);
+    if (isJob) {
+      for (const m of conv.messages) {
+        jobRelated.push({
+          _dbId: m.id,
+          body: m.body,
+          contactName: m.contact_name,
+          source: sourceNameMap[m.source] || m.source,
+          direction: m.direction,
+          messageDate: tsToDate(m.timestamp)
+        });
+      }
+    }
+  }
+  console.log(`${jobRelated.length} job-related messages to extract from.`);
+
+  // Step 4: Extract commitments — grouped by PERSON across all sources
+  // This ensures cross-channel context (e.g., LinkedIn ask + email response are seen together)
   console.log('Extracting commitments...');
   const commitments = [];
+
+  // Group job-related messages by normalized contact name (across all sources)
+  const extractGroups = new Map();
   for (const msg of jobRelated) {
-    const extracted = await extractCommitments(msg.body, msg.contactName, msg.messageDate, today, msg.direction);
+    const normName = msg.contactName.toLowerCase().trim();
+    if (!extractGroups.has(normName)) {
+      extractGroups.set(normName, {
+        messages: [],
+        displayName: msg.contactName,
+        sources: new Set()
+      });
+    }
+    const group = extractGroups.get(normName);
+    group.messages.push(msg);
+    group.sources.add(msg.source);
+    // Keep the longest/most complete version of the name as display name
+    if (msg.contactName.length > group.displayName.length) {
+      group.displayName = msg.contactName;
+    }
+  }
+
+  console.log(`  Grouped ${jobRelated.length} messages into ${extractGroups.size} cross-source conversations`);
+
+  for (const [, group] of extractGroups) {
+    // Build conversation text with source AND direction markers, sorted by date
+    const sorted = group.messages.sort((a, b) => a.messageDate.localeCompare(b.messageDate));
+    const conversationText = sorted
+      .map(m => `[${m.source} - ${m.direction}] ${m.body}`)
+      .join('\n\n')
+      .substring(0, 4000);
+    const latestDate = sorted[sorted.length - 1].messageDate;
+
+    // Add LinkedIn headline context if available
+    const headline = linkedinHeadlines.get(group.displayName);
+    const headlineContext = headline ? `\nLinkedIn headline for ${group.displayName}: "${headline}"` : '';
+
+    const extracted = await extractCommitments(
+      conversationText, group.displayName, latestDate, today, headlineContext
+    );
     if (extracted) {
-      extracted.channel = msg.source;
-      extracted.messageDate = msg.messageDate;
+      extracted.channel = [...group.sources].join(', ');
+      extracted.messageDate = latestDate;
       commitments.push(extracted);
     }
   }
@@ -208,15 +329,57 @@ async function dailyScan() {
   const recentCalls = getCallsSince(db, Date.now() - SEVEN_DAYS_MS);
   console.log(`  WhatsApp calls in last 7 days: ${recentCalls.length}`);
 
+  // Build phone-to-company mapping: find phone numbers mentioned in message
+  // bodies from known company contacts (e.g., someone shares their number on LinkedIn)
+  const phoneToCompany = new Map(); // normalized phone -> { companyName, contactName }
+  const allCompaniesForPhones = db.prepare('SELECT * FROM companies').all();
+  for (const company of allCompaniesForPhones) {
+    const contactsList = (company.contacts || '').split(',').map(s => s.trim()).filter(Boolean);
+    for (const contactName of contactsList) {
+      // Find messages from this contact that contain phone numbers
+      const msgs = db.prepare(
+        "SELECT body, phone FROM messages WHERE contact_name = ? AND classified = 1"
+      ).all(contactName);
+      for (const msg of msgs) {
+        // Extract phone numbers from message body (Indian +91 and international formats)
+        const phoneMatches = (msg.body || '').match(/\+?\d[\d\s\-()]{7,}\d/g) || [];
+        for (const ph of phoneMatches) {
+          const normalized = ph.replace(/[\s\-()+ ]/g, '');
+          if (normalized.length >= 10) {
+            phoneToCompany.set(normalized.slice(-10), { companyName: company.company, contactName, companyId: company.id });
+          }
+        }
+        // Also index the phone field from WhatsApp messages
+        if (msg.phone) {
+          const norm = msg.phone.replace(/[\s\-()+ ]/g, '');
+          if (norm.length >= 10) {
+            phoneToCompany.set(norm.slice(-10), { companyName: company.company, contactName, companyId: company.id });
+          }
+        }
+      }
+    }
+  }
+  console.log(`  Phone-to-company index: ${phoneToCompany.size} numbers mapped`);
+
   const remainingCompanies = db.prepare('SELECT * FROM companies WHERE next_follow_up_date IS NOT NULL').all();
   for (const company of remainingCompanies) {
     const contactsList = (company.contacts || '').toLowerCase().split(',').map(s => s.trim());
 
     for (const call of recentCalls) {
       const callName = (call.contact_name || '').toLowerCase();
-      const matches = contactsList.some(contact =>
+      // Match by contact name
+      let matches = contactsList.some(contact =>
         contact && callName.includes(contact.split(' ')[0])
       );
+
+      // If no name match, try matching by phone number
+      if (!matches && call.phone) {
+        const callPhoneNorm = call.phone.replace(/[\s\-()+ ]/g, '').slice(-10);
+        const phoneMatch = phoneToCompany.get(callPhoneNorm);
+        if (phoneMatch && phoneMatch.companyId === company.id) {
+          matches = true;
+        }
+      }
 
       if (matches) {
         const callDate = new Date(call.timestamp).toISOString().split('T')[0];
@@ -231,9 +394,25 @@ async function dailyScan() {
 
   if (cleared > 0) console.log(`Cleared ${cleared} total follow-ups satisfied by meetings/calls.`);
 
-  // Step 7: Send daily summary using clean data
+  // Step 7: Process feedback from replies to yesterday's summary
+  console.log('Checking for feedback...');
+  let feedbackApplied = [];
+  try {
+    const lastThread = getLastThreadId();
+    const replyText = await checkForFeedback(lastThread?.threadId);
+    if (replyText) {
+      const allCompanies = db.prepare('SELECT * FROM companies').all();
+      const actions = await parseFeedback(replyText, allCompanies);
+      console.log(`  Feedback: ${actions.length} action(s) parsed.`);
+      feedbackApplied = applyFeedback(db, actions);
+    }
+  } catch (err) {
+    console.error('Feedback processing failed:', err.message);
+  }
+
+  // Step 8: Send daily summary using clean data
   console.log('Sending daily summary...');
-  await sendDailySummary(db, upcomingEvents);
+  await sendDailySummary(db, upcomingEvents, feedbackApplied);
 
   db.close();
   console.log(`[${new Date().toISOString()}] Daily scan complete.`);
