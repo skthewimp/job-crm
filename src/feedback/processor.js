@@ -1,4 +1,7 @@
 // src/feedback/processor.js
+// Processes replies to daily summary emails as CRM commands.
+// Users can reply with natural language like "drop X", "postpone Y to next week", etc.
+
 const { google } = require('googleapis');
 const { getOAuth2Client } = require('../google-auth');
 const Anthropic = require('@anthropic-ai/sdk');
@@ -75,7 +78,7 @@ async function parseFeedback(replyText, companies) {
     max_tokens: 1000,
     messages: [{
       role: 'user',
-      content: `Parse this user reply to their daily job-hunt summary email. Extract actionable instructions.
+      content: `Parse this user reply to their daily CRM summary email. Extract actionable instructions.
 
 Current companies in CRM:
 ${companyList}
@@ -107,12 +110,35 @@ Return ONLY the JSON array, no other text.`
 
   try {
     const text = response.content[0].text.trim();
-    const jsonStr = text.replace(/^```json?\n?/, '').replace(/\n?```$/, '');
-    return JSON.parse(jsonStr);
+    return parseJsonResponse(text);
   } catch {
     console.error('  Feedback: failed to parse LLM response:', response.content[0].text);
     return [];
   }
+}
+
+function parseJsonResponse(text) {
+  // Strip markdown fences
+  let cleaned = text.replace(/^```json?\n?/s, '').replace(/\n?```$/s, '').trim();
+
+  // Try parsing as-is
+  try { return JSON.parse(cleaned); } catch { /* continue */ }
+
+  // Try extracting the JSON array from surrounding text
+  const arrayMatch = cleaned.match(/\[[\s\S]*\]/);
+  if (arrayMatch) {
+    try { return JSON.parse(arrayMatch[0]); } catch { /* continue */ }
+  }
+
+  // Try fixing common issues: trailing commas, smart quotes
+  cleaned = cleaned
+    .replace(/,\s*([\]}])/g, '$1')           // trailing commas
+    .replace(/[\u201c\u201d]/g, '"')          // smart quotes
+    .replace(/[\u2018\u2019]/g, "'");         // smart apostrophes
+  try { return JSON.parse(cleaned); } catch { /* continue */ }
+
+  console.error('  Feedback: could not parse LLM JSON, raw response:', text.substring(0, 500));
+  return [];
 }
 
 function applyFeedback(db, actions) {

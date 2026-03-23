@@ -8,6 +8,7 @@ const { extractCommitments } = require('./llm/extractor');
 const { initSheet, upsertRow } = require('./sheets/updater');
 const { sendDailySummary, getLastThreadId } = require('./summary/emailer');
 const { checkForFeedback, parseFeedback, applyFeedback } = require('./feedback/processor');
+const { isOwnerEmail, isOwnerName } = require('./config');
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -17,15 +18,12 @@ function tsToDate(ts) {
 
 // Extract names/companies from calendar events for cross-referencing
 function buildCalendarContext(pastEvents, upcomingEvents) {
-  const meetingsDone = new Set(); // company names where a meeting already happened
   const attendeeNames = [];
 
   for (const event of [...pastEvents, ...upcomingEvents]) {
     const isPast = new Date(event.start) < new Date();
     for (const a of event.attendees) {
-      const name = (a.name || '').toLowerCase();
-      const email = (a.email || '').toLowerCase();
-      if (email.includes('karthik')) continue;
+      if (isOwnerName(a.name || '') || isOwnerEmail(a.email || '')) continue;
       attendeeNames.push({
         name: a.name,
         email: a.email,
@@ -157,19 +155,29 @@ async function dailyScan() {
       convEntries.push({
         body: combinedBody,
         contactName: conv.contactName,
+        direction: conv.messages[conv.messages.length - 1].direction,
         source: sourceNameMap[conv.source] || conv.source,
         _key: key,
       });
     }
   }
 
-  console.log(`  ${autoClassifiedKeys.size} conversations auto-classified (known job contacts), ${convEntries.length} need LLM classification`);
+  console.log(`  ${autoClassifiedKeys.size} conversations auto-classified (known contacts), ${convEntries.length} need LLM classification`);
   const jobRelatedConvs = convEntries.length > 0 ? await classifyMessages(convEntries) : [];
   const jobRelatedKeys = new Set([
     ...autoClassifiedKeys,
     ...jobRelatedConvs.map(c => c._key)
   ]);
-  console.log(`${jobRelatedKeys.size} job-related conversations found.`);
+  console.log(`${jobRelatedKeys.size} CRM-relevant conversations found.`);
+
+  if (process.env.DEBUG_CLASSIFIER === '1') {
+    const missKeys = [...convMap.keys()].filter(k => !jobRelatedKeys.has(k));
+    for (const key of missKeys.slice(0, 10)) {
+      const conv = convMap.get(key);
+      const preview = conv.messages[0]?.body?.slice(0, 120) || '';
+      console.log(`  Classifier miss: [${conv.source}] ${conv.contactName} :: ${preview}`);
+    }
+  }
 
   // Expand back to individual messages and mark classified
   const jobRelated = [];
@@ -190,7 +198,7 @@ async function dailyScan() {
       }
     }
   }
-  console.log(`${jobRelated.length} job-related messages to extract from.`);
+  console.log(`${jobRelated.length} CRM-relevant messages to extract from.`);
 
   // Step 4: Extract commitments — grouped by PERSON across all sources
   // This ensures cross-channel context (e.g., LinkedIn ask + email response are seen together)
@@ -244,15 +252,12 @@ async function dailyScan() {
 
   // Step 5: Update CRM
   console.log('Updating CRM...');
-  const selfEmail = process.env.GMAIL_SELF_EMAIL;
-  const selfNames = ['karthik', 'karthik shashidhar'];
   let added = 0, updated = 0, skipped = 0;
 
   for (const commitment of commitments) {
     if (!commitment.contactName) continue;
 
-    const nameLower = commitment.contactName.toLowerCase();
-    if (selfNames.some(s => nameLower.includes(s)) || nameLower.includes(selfEmail?.split('@')[0])) {
+    if (isOwnerName(commitment.contactName) || isOwnerEmail(commitment.contactName)) {
       skipped++;
       continue;
     }
@@ -325,6 +330,32 @@ async function dailyScan() {
     }
   }
 
+  // Cross-reference: clear follow-ups where an outgoing email was sent
+  const outgoingEmails = emailMessages.filter(m => m.direction === 'outgoing');
+  const companiesAfterCal = db.prepare('SELECT * FROM companies WHERE next_follow_up_date IS NOT NULL').all();
+  for (const company of companiesAfterCal) {
+    const contactsList = (company.contacts || '').toLowerCase().split(',').map(s => s.trim());
+
+    for (const email of outgoingEmails) {
+      const emailTo = (email.contactName || '').toLowerCase();
+      const matches = contactsList.some(contact => {
+        const firstName = contact.split(' ')[0];
+        return firstName && emailTo.includes(firstName);
+      });
+
+      if (matches && company.next_follow_up_date) {
+        const replyDate = tsToDate(email.timestamp);
+        if (replyDate >= company.next_follow_up_date) {
+          console.log(`  Clearing follow-up for ${company.company}: outgoing email sent on ${replyDate}`);
+          db.prepare('UPDATE companies SET next_follow_up_date = NULL, follow_up_action = NULL, last_interaction_date = ?, last_interaction_summary = ?, updated_at = ? WHERE id = ?')
+            .run(replyDate, `Replied via email`, Date.now(), company.id);
+          cleared++;
+          break;
+        }
+      }
+    }
+  }
+
   // Also check WhatsApp calls from last 7 days
   const recentCalls = getCallsSince(db, Date.now() - SEVEN_DAYS_MS);
   console.log(`  WhatsApp calls in last 7 days: ${recentCalls.length}`);
@@ -392,7 +423,7 @@ async function dailyScan() {
     }
   }
 
-  if (cleared > 0) console.log(`Cleared ${cleared} total follow-ups satisfied by meetings/calls.`);
+  if (cleared > 0) console.log(`Cleared ${cleared} total follow-ups satisfied by meetings/calls/emails.`);
 
   // Step 7: Process feedback from replies to yesterday's summary
   console.log('Checking for feedback...');

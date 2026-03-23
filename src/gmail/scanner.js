@@ -1,15 +1,37 @@
 // src/gmail/scanner.js
 const { google } = require('googleapis');
-const { getOAuth2Client } = require('../google-auth');
+const { getOAuth2Client, getExtraGmailClients } = require('../google-auth');
 const { insertMessage } = require('../db');
+const { getGmailSelfEmail } = require('../config');
 
 async function scanEmails(db, daysBack = 7) {
-  const auth = getOAuth2Client();
-  const gmail = google.gmail({ version: 'v1', auth });
-
   const after = new Date();
   after.setDate(after.getDate() - daysBack);
   const afterEpoch = Math.floor(after.getTime() / 1000);
+
+  // Scan primary account
+  const primaryAuth = getOAuth2Client();
+  const selfEmail = getGmailSelfEmail();
+  const results = await scanOneAccount(db, primaryAuth, selfEmail, afterEpoch);
+
+  // Scan extra Gmail accounts (read-only)
+  const extraClients = getExtraGmailClients();
+  for (const { auth, email } of extraClients) {
+    try {
+      console.log(`  Scanning extra Gmail: ${email}...`);
+      const extraResults = await scanOneAccount(db, auth, email, afterEpoch);
+      results.push(...extraResults);
+      console.log(`  Found ${extraResults.length} emails from ${email}`);
+    } catch (err) {
+      console.error(`  Failed to scan ${email}:`, err.message);
+    }
+  }
+
+  return results;
+}
+
+async function scanOneAccount(db, auth, ownerEmail, afterEpoch) {
+  const gmail = google.gmail({ version: 'v1', auth });
 
   const res = await gmail.users.messages.list({
     userId: 'me',
@@ -19,6 +41,9 @@ async function scanEmails(db, daysBack = 7) {
 
   const messages = res.data.messages || [];
   const results = [];
+
+  // Build set of all owner emails for direction detection
+  const ownerEmails = getOwnerEmails();
 
   for (const msgRef of messages) {
     const msg = await gmail.users.messages.get({
@@ -35,13 +60,12 @@ async function scanEmails(db, daysBack = 7) {
     const threadId = msg.data.threadId;
 
     const body = extractBody(msg.data.payload);
-    const selfEmail = process.env.GMAIL_SELF_EMAIL;
-    const isFromMe = from.includes(selfEmail);
+    const isFromMe = ownerEmails.some(e => from.toLowerCase().includes(e));
     const contactEmail = isFromMe ? to : from;
     const contactName = extractName(contactEmail);
 
     insertMessage(db, {
-      chatId: threadId,
+      chatId: `${ownerEmail}:${threadId}`,
       contactName,
       phone: null,
       body: `Subject: ${subject}\n\n${body}`.substring(0, 5000),
@@ -62,6 +86,17 @@ async function scanEmails(db, daysBack = 7) {
   }
 
   return results;
+}
+
+function getOwnerEmails() {
+  const emails = new Set();
+  const primary = getGmailSelfEmail();
+  if (primary) emails.add(primary.toLowerCase());
+
+  const extra = (process.env.GMAIL_EXTRA_ACCOUNTS || '').split(',').map(s => s.trim()).filter(Boolean);
+  for (const e of extra) emails.add(e.toLowerCase());
+
+  return Array.from(emails);
 }
 
 function extractBody(payload) {

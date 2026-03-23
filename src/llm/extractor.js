@@ -1,5 +1,6 @@
 // src/llm/extractor.js
 const Anthropic = require('@anthropic-ai/sdk');
+const { getOwnerProfile } = require('../config');
 
 const client = new Anthropic();
 
@@ -23,26 +24,45 @@ async function callWithRetry(fn, retries = MAX_RETRIES) {
 }
 
 async function extractCommitments(conversationText, contactName, messageDate, todayDate, additionalContext) {
+  const { name: ownerName, email: ownerEmail } = getOwnerProfile();
+  const ownerDisplayName = ownerName || 'The CRM owner';
+  const ownerDisplayEmail = ownerEmail || 'unknown-email@example.com';
+  const ownerUpperName = ownerDisplayName.toUpperCase();
+
+  // Determine direction from the conversation text markers
+  const hasDirectionMarkers = /\[(Email|LinkedIn|WhatsApp)\s*-\s*(outgoing|incoming)\]/.test(conversationText);
+  const lastDirectionMatch = conversationText.match(/\[(?:Email|LinkedIn|WhatsApp)\s*-\s*(outgoing|incoming)\][^[]*$/);
+  const lastDirection = lastDirectionMatch ? lastDirectionMatch[1] : null;
+
+  const senderLine = lastDirection === 'outgoing'
+    ? `The most recent message was SENT BY ${ownerDisplayName} TO ${contactName}.`
+    : lastDirection === 'incoming'
+      ? `The most recent message was SENT BY ${contactName} TO ${ownerDisplayName}.`
+      : `Message between ${ownerDisplayName} and ${contactName}.`;
+
   const response = await callWithRetry(() => client.messages.create({
     model: 'claude-sonnet-4-6',
     max_tokens: 500,
     messages: [{
       role: 'user',
-      content: `Analyze this job-hunt related conversation and extract structured data.
+      content: `Analyze this personal CRM relevant conversation and extract structured data.
 
-This is a conversation between Karthik Shashidhar and ${contactName}.
+${senderLine}
+${additionalContext || ''}
 Each message is prefixed with [Source - direction] to show the channel and direction:
-- [Email - outgoing] = Karthik emailed ${contactName}
-- [LinkedIn - incoming] = ${contactName} messaged Karthik on LinkedIn
-- [WhatsApp - outgoing] = Karthik messaged ${contactName} on WhatsApp
+- [Email - outgoing] = ${ownerDisplayName} emailed ${contactName}
+- [LinkedIn - incoming] = ${contactName} messaged ${ownerDisplayName} on LinkedIn
+- [WhatsApp - outgoing] = ${ownerDisplayName} messaged ${contactName} on WhatsApp
 Messages may span MULTIPLE channels (Email, LinkedIn, WhatsApp). Treat them as ONE continuous interaction.
 The most recent message date is: ${messageDate}
 Today's date is: ${todayDate}
-${additionalContext || ''}
 
 WHO IS WHO:
-- Karthik Shashidhar (${process.env.GMAIL_SELF_EMAIL}) is the job seeker. He is the user of this CRM.
+- ${ownerDisplayName} (${ownerDisplayEmail}) is the CRM owner.
 - ${contactName} is the other person.
+- "I", "me", "my" in the message refers to whoever SENT the message (see direction markers).
+- If the message is outgoing (sent by ${ownerDisplayName}), then "I will send that tomorrow" means ${ownerUpperName} will do it.
+- If the message is incoming (sent by ${contactName}), then "Can you help me?" means ${contactName} is asking for help.
 
 CROSS-CHANNEL AWARENESS (CRITICAL):
 - These messages come from multiple channels but are about the SAME relationship.
@@ -54,56 +74,202 @@ DATE RULES:
 2. Resolve to absolute YYYY-MM-DD format.
 3. Keep past dates — they become overdue reminders.
 
-FOLLOW-UP RULES:
-Only set followUpDate/followUpAction for things KARTHIK needs to act on:
-- Karthik said he would do something → follow-up on that date
-- Karthik asked for something and hasn't received it → nudge follow-up
-- Other person promised to send something → nudge follow-up if enough time has passed
-Do NOT set follow-ups for:
-- Actions already completed on ANY channel (e.g., CV already sent by email)
-- Meetings/calls ("let's talk tomorrow") — can't verify if they happened
-- General pleasantries or discussion with no commitment
+PERSONAL CRM RULES:
+- Extract the OTHER person, not ${ownerDisplayName}.
+- Track obligations, promises, reminders, waiting states, and durable relationship context.
+- followUpDate / followUpAction are only for things ${ownerDisplayName} needs to do.
+- waitingOnThem should be true if the other person owes a reply, intro, file, update, scheduling confirmation, or similar next step.
+- waitingOnWhat should describe that dependency briefly.
+- relationshipType can be Recruiter, Hiring Manager, Referral, Network contact, Friend, Family, Client, Colleague, Founder, Investor, Vendor, Mentor, or Other.
+- priority should reflect reminder urgency: High, Medium, or Low.
+- status should be one of Active, Waiting, Dormant, or Closed.
+- notes should only capture durable context worth remembering later, not a full transcript.
 
 COMPANY RULES (IMPORTANT):
 - Try hard to infer the company name from ANY clue in the conversation: company names, job postings, URLs, role titles, email domains, or references to "the role", "the position", "the team".
-- If a LinkedIn headline is provided above, use it to identify the company — the headline typically contains "Role at Company".
+- If a LinkedIn headline is provided above, use it to identify the company.
 - If ${contactName} is referring someone or acting as a middleman, the company is wherever the ROLE is, not where ${contactName} works.
-- If the conversation mentions a specific company or job link, use that.
-- If ${contactName} appears to work at or represent a company (e.g., "we're hiring", "our team"), infer that as the company.
-- As a last resort, if the conversation is clearly job-related but no company is identifiable, use "Unknown (via ${contactName})" rather than null. This ensures the interaction is tracked.
+- As a last resort, if no company is identifiable, use "Unknown (via ${contactName})" rather than null.
 
-Extract info about the OTHER person (${contactName}), not Karthik.
+Extract info about the OTHER person (${contactName}), not ${ownerDisplayName}.
 
 Conversation:
 ${conversationText}
 
-Return a JSON object with these fields (use null ONLY if truly not determinable, except company — see rules above):
+Return a JSON object with these fields (use null if not found):
 {
-  "contactName": "full name of the OTHER person (not Karthik)",
-  "company": "their company or the company where the role is (NEVER null for job-related conversations — use 'Unknown (via ContactName)' as last resort)",
+  "contactName": "full name of the OTHER person (not ${ownerDisplayName})",
+  "company": "their company or the company where the role is",
   "roleTitle": "their job title/role",
-  "relationshipType": "Recruiter | Hiring Manager | Referral | Network contact",
-  "roleDiscussed": "specific job role being discussed for Karthik",
+  "relationshipType": "Recruiter | Hiring Manager | Referral | Network contact | Friend | Family | Client | Colleague | Founder | Investor | Vendor | Mentor | Other",
+  "roleDiscussed": "specific job role being discussed, or relationship context",
   "interactionSummary": "one-line summary of this exchange across all channels",
-  "followUpDate": "YYYY-MM-DD — only if Karthik has an UNSATISFIED action to take, otherwise null",
-  "followUpAction": "what Karthik needs to do (verb phrase), or null",
-  "status": "Active | Waiting | Interview Scheduled"
+  "followUpDate": "YYYY-MM-DD — only if ${ownerDisplayName} has an UNSATISFIED action to take, otherwise null",
+  "followUpAction": "what ${ownerDisplayName} needs to do (verb phrase), or null",
+  "waitingOnThem": true,
+  "waitingOnWhat": "what the other person owes or needs to reply with, or null",
+  "priority": "High | Medium | Low",
+  "status": "Active | Waiting | Dormant | Closed",
+  "notes": "durable context to save for future follow-up, or null"
 }
 
-IMPORTANT: Never return Karthik Shashidhar as the contactName. If you cannot identify another person, return null for contactName.
+IMPORTANT: Never return ${ownerDisplayName} as the contactName. If you cannot identify another person, return null for contactName.
 
 Return ONLY the JSON, no other text.`
     }]
   }));
 
+  const text = (response.content[0].text || '').trim();
+
+  if (!text) {
+    console.warn('LLM returned empty response, using heuristic fallback.');
+    return extractHeuristicCommitment(conversationText, contactName, messageDate, lastDirection);
+  }
+
   try {
-    const text = response.content[0].text.trim();
     const jsonStr = text.replace(/^```json?\n?/, '').replace(/\n?```$/, '');
     return JSON.parse(jsonStr);
   } catch {
-    console.error('Failed to parse LLM response:', response.content[0].text);
-    return null;
+    console.error('Failed to parse LLM response:', text.slice(0, 200));
+    return extractHeuristicCommitment(conversationText, contactName, messageDate, lastDirection);
   }
+}
+
+function extractHeuristicCommitment(messageText, contactName, messageDate, direction) {
+  const text = (messageText || '').replace(/\s+/g, ' ').trim();
+  const lowered = text.toLowerCase();
+  const followUpDate = resolveRelativeDate(lowered, messageDate);
+
+  if (direction === 'outgoing') {
+    const outgoingAction = extractOutgoingAction(text);
+    if (outgoingAction && followUpDate) {
+      return {
+        contactName: contactName || null,
+        company: null,
+        roleTitle: null,
+        relationshipType: 'Other',
+        roleDiscussed: 'Follow-up conversation',
+        interactionSummary: summarizeInteraction(text, contactName, 'Promised a follow-up'),
+        followUpDate,
+        followUpAction: outgoingAction,
+        waitingOnThem: false,
+        waitingOnWhat: null,
+        priority: 'High',
+        status: 'Active',
+        notes: 'Extracted via heuristic fallback',
+      };
+    }
+  }
+
+  const waitingOnWhat = extractIncomingPromise(text);
+  if (waitingOnWhat && followUpDate) {
+    return {
+      contactName: contactName || null,
+      company: null,
+      roleTitle: null,
+      relationshipType: 'Other',
+      roleDiscussed: 'Follow-up conversation',
+      interactionSummary: summarizeInteraction(text, contactName, 'Waiting on a promised follow-up'),
+      followUpDate,
+      followUpAction: null,
+      waitingOnThem: true,
+      waitingOnWhat,
+      priority: 'Medium',
+      status: 'Waiting',
+      notes: 'Extracted via heuristic fallback',
+    };
+  }
+
+  return null;
+}
+
+function extractOutgoingAction(text) {
+  const patterns = [
+    /\blet me ([^.?!]+)/i,
+    /\bi(?:'| wi)?ll ([^.?!]+)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) {
+      const action = match[1]
+        .replace(/\b(today|tonight|this evening|tomorrow|next week|on monday|on tuesday|on wednesday|on thursday|on friday|on saturday|on sunday)\b/ig, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (action) return capitalize(action);
+    }
+  }
+
+  return null;
+}
+
+function extractIncomingPromise(text) {
+  const patterns = [
+    /\bi(?:'| wi)?ll ([^.?!]+)/i,
+    /\blet me ([^.?!]+)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) {
+      return capitalize(match[1].replace(/\s+/g, ' ').trim());
+    }
+  }
+
+  return null;
+}
+
+function resolveRelativeDate(loweredText, baseDate) {
+  if (!baseDate) return null;
+
+  const base = new Date(`${baseDate}T00:00:00Z`);
+  if (Number.isNaN(base.getTime())) return null;
+
+  if (/\b(today|tonight|this evening)\b/.test(loweredText)) {
+    return formatDate(base);
+  }
+
+  if (/\btomorrow\b/.test(loweredText)) {
+    const next = new Date(base);
+    next.setUTCDate(next.getUTCDate() + 1);
+    return formatDate(next);
+  }
+
+  if (/\bnext week\b/.test(loweredText)) {
+    const next = new Date(base);
+    next.setUTCDate(next.getUTCDate() + 7);
+    return formatDate(next);
+  }
+
+  const weekdays = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+  for (let i = 0; i < weekdays.length; i++) {
+    const weekday = weekdays[i];
+    if (new RegExp(`\\b${weekday}\\b`).test(loweredText)) {
+      const currentDay = base.getUTCDay();
+      let delta = (i - currentDay + 7) % 7;
+      if (delta === 0) delta = 7;
+      const resolved = new Date(base);
+      resolved.setUTCDate(resolved.getUTCDate() + delta);
+      return formatDate(resolved);
+    }
+  }
+
+  return null;
+}
+
+function summarizeInteraction(text, contactName, fallback) {
+  const firstSentence = text.split(/[.?!]\s/)[0]?.trim();
+  if (firstSentence) return firstSentence;
+  if (contactName) return `${fallback} with ${contactName}`;
+  return fallback;
+}
+
+function formatDate(date) {
+  return date.toISOString().split('T')[0];
+}
+
+function capitalize(value) {
+  return value ? value.charAt(0).toUpperCase() + value.slice(1) : value;
 }
 
 module.exports = { extractCommitments };

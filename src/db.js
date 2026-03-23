@@ -118,6 +118,12 @@ function getCallsSince(db, sinceTimestamp) {
 }
 
 function insertMessage(db, { chatId, contactName, phone, body, timestamp, direction, source }) {
+  // Skip if an identical message already exists (dedup for repeated backfills)
+  const existing = db.prepare(
+    'SELECT 1 FROM messages WHERE chat_id = ? AND timestamp = ? AND source = ? LIMIT 1'
+  ).get(chatId, timestamp, source);
+  if (existing) return { changes: 0 };
+
   const stmt = db.prepare(`
     INSERT OR IGNORE INTO messages (chat_id, contact_name, phone, body, timestamp, direction, source)
     VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -199,7 +205,6 @@ function upsertCompany(db, data) {
     }
 
     // For follow-up: keep the LATEST (most future) follow-up date
-    // If incoming has a follow-up date, only overwrite if it's later than existing
     if (data.followUpDate) {
       const existingFollowUp = existing.next_follow_up_date || '';
       if (!existingFollowUp || data.followUpDate > existingFollowUp) {
@@ -255,7 +260,6 @@ function getCompaniesDueForFollowUp(db, date) {
   `).all(date);
 }
 
-// Keep old functions for backward compat during migration
 function upsertContact(db, contact) {
   const keyMap = {
     relationshipType: 'relationship_type',
@@ -278,18 +282,44 @@ function upsertContact(db, contact) {
   if (existing) {
     const fields = [];
     const values = [];
-    const updatable = [
-      'role', 'relationship_type', 'source', 'channel',
-      'last_interaction_date', 'last_interaction_summary',
-      'next_follow_up_date', 'follow_up_action', 'status',
-      'notes', 'role_discussed'
-    ];
 
-    for (const field of updatable) {
-      if (contact[field] !== undefined) {
-        fields.push(`${field} = ?`);
-        values.push(contact[field]);
+    // Only update interaction details if this message is newer than what's stored
+    const incomingDate = contact.last_interaction_date || '';
+    const storedDate = existing.last_interaction_date || '';
+    const isNewer = incomingDate >= storedDate;
+
+    if (isNewer) {
+      const updatable = [
+        'role', 'relationship_type', 'source', 'channel',
+        'last_interaction_date', 'last_interaction_summary',
+        'status', 'role_discussed'
+      ];
+
+      for (const field of updatable) {
+        if (contact[field] !== undefined) {
+          fields.push(`${field} = ?`);
+          values.push(contact[field]);
+        }
       }
+    }
+
+    // For follow-up: keep the LATEST (most future) follow-up date
+    if (contact.next_follow_up_date !== undefined) {
+      const existingFollowUp = existing.next_follow_up_date || '';
+      if (!existingFollowUp || contact.next_follow_up_date > existingFollowUp) {
+        fields.push('next_follow_up_date = ?');
+        values.push(contact.next_follow_up_date);
+        fields.push('follow_up_action = ?');
+        values.push(contact.follow_up_action || existing.follow_up_action || '');
+      }
+    } else if (contact.follow_up_action !== undefined) {
+      fields.push('follow_up_action = ?');
+      values.push(contact.follow_up_action);
+    }
+
+    if (contact.notes) {
+      fields.push('notes = ?');
+      values.push(existing.notes ? `${existing.notes}\n${contact.notes}`.trim() : contact.notes);
     }
 
     if (fields.length > 0) {
@@ -319,7 +349,10 @@ function upsertContact(db, contact) {
 }
 
 function getContactByNameAndCompany(db, name, company) {
-  return db.prepare('SELECT * FROM contacts WHERE name = ? AND company = ?').get(name, company || null);
+  if (company) {
+    return db.prepare('SELECT * FROM contacts WHERE name = ? AND company = ?').get(name, company);
+  }
+  return db.prepare('SELECT * FROM contacts WHERE name = ? AND company IS NULL').get(name);
 }
 
 function getContacts(db) {
@@ -331,7 +364,7 @@ function getContactsDueForFollowUp(db, date) {
     SELECT * FROM contacts
     WHERE next_follow_up_date IS NOT NULL
       AND next_follow_up_date <= ?
-      AND status NOT IN ('Closed', 'Offer', 'Not Interested')
+      AND status NOT IN ('Closed', 'Offer', 'Not Interested', 'Dormant')
     ORDER BY next_follow_up_date ASC
   `).all(date);
 }

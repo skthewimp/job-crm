@@ -6,11 +6,11 @@
     <string>com.jobcrm.daily-scan</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/opt/homebrew/bin/node</string>
-        <string>/Users/Karthik/Documents/work/vibes/job-crm/src/daily-scan.js</string>
+        <string>__NODE_PATH__</string>
+        <string>__PROJECT_DIR__/src/daily-scan.js</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>/Users/Karthik/Documents/work/vibes/job-crm</string>
+    <string>__PROJECT_DIR__</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
@@ -24,8 +24,8 @@
         <integer>0</integer>
     </dict>
     <key>StandardOutPath</key>
-    <string>/Users/Karthik/Documents/work/vibes/job-crm/data/daily-scan.log</string>
+    <string>__PROJECT_DIR__/data/daily-scan.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/Karthik/Documents/work/vibes/job-crm/data/daily-scan-error.log</string>
+    <string>__PROJECT_DIR__/data/daily-scan-error.log</string>
 </dict>
 </plist>

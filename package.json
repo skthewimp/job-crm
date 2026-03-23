@@ -7,9 +7,12 @@
     "doc": "docs"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node --test tests/db.test.js tests/llm.test.js",
+    "setup:check": "node scripts/check-setup.js",
     "auth:google": "node scripts/google-auth-setup.js",
+    "auth:gmail-extra": "node scripts/auth-extra-gmail.js",
     "whatsapp": "node src/whatsapp/collector.js",
+    "whatsapp:backfill": "node src/whatsapp/backfill.js",
     "scan": "node src/daily-scan.js"
   },
   "keywords": [],
