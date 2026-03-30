@@ -93,6 +93,17 @@ async function dailyScan() {
 
   console.log(`Found: ${emailMessages.length} emails, ${pastEvents.length} past events, ${upcomingEvents.length} upcoming events, ${whatsappMessages.length} WhatsApp messages, ${linkedinMessages.length} LinkedIn messages`);
 
+  // Build email domain map: contactName -> email domain (e.g. "kpmg.com")
+  const contactEmails = new Map(); // contactName -> email address
+  for (const msg of emailMessages) {
+    if (msg.contactEmail) {
+      const emailMatch = msg.contactEmail.match(/<?\s*([^<>\s]+@[^<>\s]+)\s*>?/);
+      if (emailMatch) {
+        contactEmails.set(msg.contactName, emailMatch[1].toLowerCase());
+      }
+    }
+  }
+
   // Store LinkedIn messages in DB (with headline as metadata prefix)
   const linkedinHeadlines = new Map(); // contactName -> headline
   for (const msg of linkedinMessages) {
@@ -229,12 +240,15 @@ async function dailyScan() {
       .substring(0, 4000);
     const latestDate = sorted[sorted.length - 1].messageDate;
 
-    // Add LinkedIn headline context if available
+    // Add LinkedIn headline and email domain context if available
     const headline = linkedinHeadlines.get(group.displayName);
-    const headlineContext = headline ? `\nLinkedIn headline for ${group.displayName}: "${headline}"` : '';
+    const email = contactEmails.get(group.displayName);
+    let additionalContext = '';
+    if (headline) additionalContext += `\nLinkedIn headline for ${group.displayName}: "${headline}"`;
+    if (email) additionalContext += `\nEmail address for ${group.displayName}: ${email}`;
 
     const extracted = await extractCommitments(
-      conversationText, group.displayName, latestDate, today, headlineContext
+      conversationText, group.displayName, latestDate, today, additionalContext
     );
     if (extracted) {
       extracted.channel = [...group.sources].join(', ');
