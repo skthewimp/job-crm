@@ -139,25 +139,25 @@ async function scanLinkedInAttempt() {
           }
         }
 
-        // Collect URNs of contacts we have messages from but no headline for
+        // Collect URNs of contacts we need profile info for
+        const urnToCompany = new Map(); // URN -> current company name
         const contactUrnsNeedingProfile = new Set();
         for (const msg of messages) {
-          const otherUrn = msg._senderUrn === selfUrn ? null : msg._senderUrn;
-          if (!otherUrn) {
-            // outgoing - find the other person's URN
+          let otherUrn = null;
+          if (msg._senderUrn === selfUrn) {
             if (msg._convUrn) {
               const participants = convParticipants.get(msg._convUrn) || [];
-              const other = participants.find(u => u !== selfUrn);
-              if (other && !urnToHeadline.has(other) && urnToProfileUrl.has(other)) {
-                contactUrnsNeedingProfile.add(other);
-              }
+              otherUrn = participants.find(u => u !== selfUrn);
             }
-          } else if (!urnToHeadline.has(otherUrn) && urnToProfileUrl.has(otherUrn)) {
+          } else {
+            otherUrn = msg._senderUrn;
+          }
+          if (otherUrn && urnToProfileUrl.has(otherUrn) && !urnToCompany.has(otherUrn)) {
             contactUrnsNeedingProfile.add(otherUrn);
           }
         }
 
-        // Visit profiles to scrape headline for contacts missing it
+        // Visit profiles to scrape headline and current company
         if (contactUrnsNeedingProfile.size > 0) {
           console.log(`  LinkedIn: visiting ${contactUrnsNeedingProfile.size} profile(s) for company info...`);
           for (const urn of contactUrnsNeedingProfile) {
@@ -165,19 +165,68 @@ async function scanLinkedInAttempt() {
             if (!profileUrl) continue;
             try {
               await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
-              const headline = await page.evaluate(() => {
-                const el = document.querySelector('.text-body-medium.break-words')
+              const profileData = await page.evaluate(() => {
+                // Scrape headline
+                const headlineEl = document.querySelector('.text-body-medium.break-words')
                   || document.querySelector('[data-generated-suggestion-target]')
                   || document.querySelector('.pv-top-card--list .text-body-medium');
-                return el ? el.textContent.trim() : null;
+                const headline = headlineEl ? headlineEl.textContent.trim() : null;
+
+                // Scrape current company from the top card "experience" line
+                // LinkedIn shows "Company Name" in the top card under the headline
+                let company = null;
+
+                // Method 1: Top card experience section (most reliable)
+                const expButton = document.querySelector('button[aria-label*="Current company"]')
+                  || document.querySelector('button[aria-label*="current company"]');
+                if (expButton) {
+                  company = expButton.textContent.trim().split('\n')[0].trim();
+                }
+
+                // Method 2: Look for the experience list item with "Present" in duration
+                if (!company) {
+                  const expItems = document.querySelectorAll('.pvs-list__paged-list-item, li.artdeco-list__item');
+                  for (const item of expItems) {
+                    const text = item.textContent || '';
+                    if (text.includes('Present') || text.includes('present')) {
+                      // The company name is typically in a span with specific classes
+                      const spans = item.querySelectorAll('span[aria-hidden="true"]');
+                      for (const span of spans) {
+                        const t = span.textContent.trim();
+                        // Company names are usually short and don't contain date patterns
+                        if (t && t.length > 1 && t.length < 80 && !/\d{4}/.test(t) && !/^\d+/.test(t)) {
+                          company = t;
+                          break;
+                        }
+                      }
+                      if (company) break;
+                    }
+                  }
+                }
+
+                // Method 3: Top card company link
+                if (!company) {
+                  const companyLink = document.querySelector('a[href*="/company/"] .text-body-small')
+                    || document.querySelector('.pv-top-card--experience-list-item .text-body-small');
+                  if (companyLink) {
+                    company = companyLink.textContent.trim();
+                  }
+                }
+
+                return { headline, company };
               });
-              if (headline) {
-                urnToHeadline.set(urn, headline);
+
+              if (profileData.headline && !urnToHeadline.has(urn)) {
+                urnToHeadline.set(urn, profileData.headline);
+              }
+              if (profileData.company) {
+                urnToCompany.set(urn, profileData.company);
               }
             } catch (e) {
               // Profile visit failed, skip
             }
           }
+          console.log(`  LinkedIn: scraped ${urnToCompany.size} company names from profiles`);
         }
 
         // Attach headline to messages as linkedinHeadline
@@ -195,6 +244,9 @@ async function scanLinkedInAttempt() {
 
           if (otherUrn && urnToHeadline.has(otherUrn)) {
             msg.linkedinHeadline = urnToHeadline.get(otherUrn);
+          }
+          if (otherUrn && urnToCompany.has(otherUrn)) {
+            msg.linkedinCompany = urnToCompany.get(otherUrn);
           }
 
           delete msg._senderUrn;

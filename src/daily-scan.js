@@ -104,11 +104,15 @@ async function dailyScan() {
     }
   }
 
-  // Store LinkedIn messages in DB (with headline as metadata prefix)
+  // Store LinkedIn messages in DB (with headline and company as metadata)
   const linkedinHeadlines = new Map(); // contactName -> headline
+  const linkedinCompanies = new Map(); // contactName -> company
   for (const msg of linkedinMessages) {
     if (msg.linkedinHeadline) {
       linkedinHeadlines.set(msg.contactName, msg.linkedinHeadline);
+    }
+    if (msg.linkedinCompany) {
+      linkedinCompanies.set(msg.contactName, msg.linkedinCompany);
     }
     insertMessage(db, {
       chatId: null,
@@ -240,10 +244,12 @@ async function dailyScan() {
       .substring(0, 4000);
     const latestDate = sorted[sorted.length - 1].messageDate;
 
-    // Add LinkedIn headline and email domain context if available
+    // Add LinkedIn profile data and email domain context if available
     const headline = linkedinHeadlines.get(group.displayName);
+    const linkedinCompany = linkedinCompanies.get(group.displayName);
     const email = contactEmails.get(group.displayName);
     let additionalContext = '';
+    if (linkedinCompany) additionalContext += `\nCurrent company from LinkedIn profile for ${group.displayName}: "${linkedinCompany}"`;
     if (headline) additionalContext += `\nLinkedIn headline for ${group.displayName}: "${headline}"`;
     if (email) additionalContext += `\nEmail address for ${group.displayName}: ${email}`;
 

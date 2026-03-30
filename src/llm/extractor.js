@@ -86,9 +86,11 @@ PERSONAL CRM RULES:
 - notes should only capture durable context worth remembering later, not a full transcript.
 
 COMPANY RULES (IMPORTANT):
-- Try hard to infer the company name from ANY clue in the conversation: company names, job postings, URLs, role titles, or references to "the role", "the position", "the team".
-- If a LinkedIn headline is provided above, extract the company name from it (e.g. "Senior Recruiter at KPMG" → company is "KPMG").
-- If an email address is provided above, use the email domain to identify the company (e.g. "john@kpmg.com" → company is "KPMG"). Ignore generic domains like gmail.com, yahoo.com, hotmail.com, outlook.com, etc.
+- Try hard to infer the company name from ANY clue, in this priority order:
+  1. Conversation text: company names, job postings, URLs, role titles, references to "the role", "the position", "the team"
+  2. Current company from LinkedIn profile (if provided above) — this is scraped directly from their profile page
+  3. LinkedIn headline (if provided above) — extract company from patterns like "Role at Company"
+  4. Email domain (if provided above) — e.g. "john@kpmg.com" → "KPMG". Ignore generic domains (gmail.com, yahoo.com, hotmail.com, outlook.com, rediffmail.com, etc.)
 - If ${contactName} is referring someone or acting as a middleman, the company is wherever the ROLE is, not where ${contactName} works.
 - If no company can be identified from any of these sources, return null for company. Do NOT use "Unknown" or "Unknown (via ...)" as a company name.
 
