@@ -140,34 +140,27 @@ async function dailyScan() {
     convMap.get(key).messages.push(m);
   }
 
-  // Split: auto-classify known contacts, send the rest to the LLM
-  const autoClassifiedKeys = new Set();
+  // Send all conversations to the LLM for classification — even known contacts,
+  // since people who are job-related in one context may also have non-job conversations.
   const convEntries = [];
   for (const [key, conv] of convMap) {
-    const normName = conv.contactName.toLowerCase().trim();
-    if (knownJobContacts.has(normName)) {
-      autoClassifiedKeys.add(key);
-    } else {
-      const combinedBody = conv.messages
-        .map(m => `[${m.direction}] ${m.body}`)
-        .join('\n')
-        .substring(0, 2000);
-      convEntries.push({
-        body: combinedBody,
-        contactName: conv.contactName,
-        direction: conv.messages[conv.messages.length - 1].direction,
-        source: sourceNameMap[conv.source] || conv.source,
-        _key: key,
-      });
-    }
+    const combinedBody = conv.messages
+      .map(m => `[${m.direction}] ${m.body}`)
+      .join('\n')
+      .substring(0, 2000);
+    convEntries.push({
+      body: combinedBody,
+      contactName: conv.contactName,
+      direction: conv.messages[conv.messages.length - 1].direction,
+      source: sourceNameMap[conv.source] || conv.source,
+      _key: key,
+      _isKnownContact: knownJobContacts.has(conv.contactName.toLowerCase().trim()),
+    });
   }
 
-  console.log(`  ${autoClassifiedKeys.size} conversations auto-classified (known contacts), ${convEntries.length} need LLM classification`);
+  console.log(`  ${convEntries.length} conversations to classify (${convEntries.filter(c => c._isKnownContact).length} from known contacts)`);
   const jobRelatedConvs = convEntries.length > 0 ? await classifyMessages(convEntries) : [];
-  const jobRelatedKeys = new Set([
-    ...autoClassifiedKeys,
-    ...jobRelatedConvs.map(c => c._key)
-  ]);
+  const jobRelatedKeys = new Set(jobRelatedConvs.map(c => c._key));
   console.log(`${jobRelatedKeys.size} CRM-relevant conversations found.`);
 
   if (process.env.DEBUG_CLASSIFIER === '1') {

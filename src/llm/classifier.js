@@ -6,6 +6,8 @@ const client = new Anthropic();
 const BATCH_SIZE = 20;
 const RETRY_DELAY_MS = 5000;
 const MAX_RETRIES = 3;
+const JOB_SEARCH_KEYWORDS = /\b(job|role|position|hiring|recruit|interview|resume|cv|offer|candidate|application|apply|openings?|opportunity|JD|job description)\b/i;
+
 const OUTBOUND_COMMITMENT_PATTERNS = [
   /\bi('| a)?ll\b.+\b(get back|follow up|send|share|revert|reply|update|call|introduce|connect|circle back)\b/i,
   /\blet me\b.+\b(get back|send|share|follow up|reply|check|confirm|introduce)\b/i,
@@ -46,21 +48,24 @@ async function classifyBatch(messages) {
     max_tokens: 200,
     messages: [{
       role: 'user',
-      content: `Classify each numbered message below as personal-CRM relevant or not.
+      content: `Classify each numbered message below as JOB-SEARCH relevant or not.
 
-A message is personal-CRM relevant if it creates something worth tracking in a relationship manager, such as:
-- a follow-up or promise the CRM owner needs to do
-- a request, reply, document, intro, or next step they are waiting on
-- a meaningful relationship update or context worth remembering
-- a meeting, catch-up, or coordination note that affects future follow-up
-- a person-specific reminder, obligation, or commitment
-- IMPORTANT: outbound messages like "I'll get back to you", "I'll send this tonight", "let me follow up", or "I will share more information tomorrow" should almost always be marked YES because they create a commitment for the sender.
-- IMPORTANT: if a message includes a concrete time promise such as today, tonight, this evening, tomorrow, next week, or a weekday tied to a response/action, mark it YES.
+This is a JOB SEARCH CRM. A message is relevant ONLY if it relates to:
+- job opportunities, roles, positions, or hiring discussions
+- recruiter outreach or communication with hiring managers
+- job applications, interviews, assessments, or offer discussions
+- professional introductions specifically for job/role opportunities
+- resume/CV sharing in the context of job applications
+- career-related networking where a specific role or company opportunity is being discussed
 
-Mark as NOT relevant if it is only:
-- casual banter with no follow-up value
+Mark as NOT relevant if it is:
+- casual banter, social catch-ups, coffee meetings with no job context
+- investor relations, fundraising, or business development
+- personal favors, family matters, or non-career introductions
 - spam, promo, OTP, receipt, or automated noise
-- logistics with no durable relationship or reminder value
+- general professional networking with no specific job/role discussed
+- business operations, client work, consulting engagements
+- anything that doesn't involve finding or applying for a job
 
 For each message, output ONLY its number and "yes" or "no", one per line. Example:
 1: yes
@@ -128,6 +133,12 @@ function getMessageTextForClassification(message) {
 
 function isObviousCrmMessage(message) {
   const text = getMessageTextForClassification(message);
+
+  // Regex fallback only fires if the message contains job-search keywords
+  if (!JOB_SEARCH_KEYWORDS.test(text)) {
+    return false;
+  }
+
   const isOutgoing = message.direction === 'outgoing';
 
   if (isOutgoing && OUTBOUND_COMMITMENT_PATTERNS.some(pattern => pattern.test(text))) {
