@@ -208,26 +208,26 @@ async function dailyScan() {
   }
   console.log(`${jobRelated.length} CRM-relevant messages to extract from.`);
 
-  // Step 4: Extract commitments — grouped by PERSON across all sources
-  // This ensures cross-channel context (e.g., LinkedIn ask + email response are seen together)
+  // Step 4: Extract commitments — grouped by source + contact name
+  // We avoid merging across sources to prevent NER collisions (e.g., two different
+  // people named "Rahul" from different channels getting combined)
   console.log('Extracting commitments...');
   const commitments = [];
 
-  // Group job-related messages by normalized contact name (across all sources)
   const extractGroups = new Map();
   for (const msg of jobRelated) {
-    const normName = msg.contactName.toLowerCase().trim();
-    if (!extractGroups.has(normName)) {
-      extractGroups.set(normName, {
+    // Use source:name as key to keep different-source contacts separate
+    const key = `${msg.source}:${msg.contactName.toLowerCase().trim()}`;
+    if (!extractGroups.has(key)) {
+      extractGroups.set(key, {
         messages: [],
         displayName: msg.contactName,
         sources: new Set()
       });
     }
-    const group = extractGroups.get(normName);
+    const group = extractGroups.get(key);
     group.messages.push(msg);
     group.sources.add(msg.source);
-    // Keep the longest/most complete version of the name as display name
     if (msg.contactName.length > group.displayName.length) {
       group.displayName = msg.contactName;
     }
